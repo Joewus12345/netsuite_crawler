@@ -1,114 +1,128 @@
 from selenium import webdriver  # Controls the browser
 from selenium.webdriver.common.by import By  # Find elements
-from selenium.webdriver.common.keys import Keys  # Send input
+# from selenium.webdriver.common.keys import Keys  # Send input
 from selenium.webdriver.support.ui import WebDriverWait  # Handle delays
 from selenium.webdriver.support import expected_conditions as EC  # Handle dynamic elements
 import time  # For delays
 from urllib.parse import urljoin  # Handle URLs
 import requests  # requests for HTTP requests
 from bs4 import BeautifulSoup  # Parses HTML to extract links
-from config import NETSUITE_URL, NETSUITE_EMAIL, NETSUITE_PASSWORD, SECURITY_ANSWER  # Import security question answers
+from config import NETSUITE_URL, NETSUITE_EMAIL, NETSUITE_PASSWORD, SECURITY_ANSWER, ADMIN_ITEM_URL  # Import credentials
+
+# ✅ Configure WebDriver (Allow headless mode)
+HEADLESS_MODE = True # Set to True to run in headless mode
 
 # Set up WebDriver options
 options = webdriver.ChromeOptions()
-# options.add_argument("--headless")  # Run in the background if needed
+if HEADLESS_MODE:
+    options.add_argument("--headless")  # Enable headless mode
+    options.add_argument("--disable-gpu")  # Necessary for headless on Windows
+    options.add_argument("--window-size=1920,1080")  # Set browser size
 driver = webdriver.Chrome(options=options)
 
 def login_netsuite(driver):
-    """Logs into NetSuite using Selenium and starts crawling after successful login."""
+    """Logs into NetSuite, handles 2FA dynamically, and navigates to the 'Admin Item' Custom Record."""
     driver.get(NETSUITE_URL)
 
     try:
-        # Wait for email input to load
+        # Wait for email input
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "email")))
 
-        # Enter email
-        email_field = driver.find_element(By.ID, "email")
-        email_field.send_keys(NETSUITE_EMAIL)
+        # Enter email & password
+        driver.find_element(By.ID, "email").send_keys(NETSUITE_EMAIL)
+        driver.find_element(By.ID, "password").send_keys(NETSUITE_PASSWORD)
 
-        # Enter password
-        password_field = driver.find_element(By.ID, "password")
-        password_field.send_keys(NETSUITE_PASSWORD)
-
-        # Click login button
-        login_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "login-submit")))
-        login_button.click()
-
-        # Wait for redirection
+        # Click login
+        driver.find_element(By.ID, "login-submit").click()
         time.sleep(7)
 
         # ✅ Print the current URL for debugging
         print(f"🔍 Current page URL: {driver.current_url}")
 
-        # ✅ Check if redirected to the security questions page
+        # ✅ Handle 2FA Authentication
+        if "loginchallenge/entry.nl" in driver.current_url:
+            print("🔐 2FA Authentication Required!")
+
+            if HEADLESS_MODE:
+                # Headless Mode → Enter 2FA Code in Console
+                two_fa_code = input("🔢 Enter 2FA Code: ")  # Prompt user for 6-digit code
+
+                try:
+                    # Wait for the 2FA input field
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.ID, "uif56_input"))
+                    )
+
+                    # Enter the 2FA code from the console
+                    two_fa_input = driver.find_element(By.ID, "uif56_input")
+                    two_fa_input.send_keys(two_fa_code)
+                    print("✅ 2FA Code Entered.")
+
+                    # Wait for the submit button
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-type='primary'][role='button']"))
+                    )
+
+                    # Click submit using JavaScript (since it's inside a <div>)
+                    submit_button = driver.find_element(By.CSS_SELECTOR, "div[data-type='primary'][role='button']")
+                    driver.execute_script("arguments[0].click();", submit_button)
+                    print("✅ 2FA Code Submitted.")
+
+                    time.sleep(5)  # Wait for redirection
+                except Exception as e:
+                    print(f"⚠️ Error entering 2FA code: {e}")
+                    driver.quit()
+                    return
+
+            else:
+                # Non-Headless Mode → User enters 2FA manually
+                print("⏳ Waiting for manual 2FA entry in the browser...")
+                time.sleep(30)  # Give user 30 seconds to enter the code manually
+
+        # ✅ Handle security questions
         if "securityquestions.nl" in driver.current_url:
             print("🔐 Security questions detected! Answering...")
 
             try:
-                # Wait for the answer input field to appear
+                # Wait for answer input field
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='answer'][type='password']"))
                 )
-
-                # Locate the answer input field directly
-                answer_input = driver.find_element(By.CSS_SELECTOR, "input[name='answer'][type='password']")
-
-                # Fill in the answer
-                answer_input.send_keys(SECURITY_ANSWER)
-                print(f"✅ Answered security question.")
+                driver.find_element(By.CSS_SELECTOR, "input[name='answer'][type='password']").send_keys(SECURITY_ANSWER)
+                print("✅ Answered security question.")
 
                 # Click submit
-                submit_button = driver.find_element(By.CSS_SELECTOR, "input[name='submitter'][type='submit']")
-                submit_button.click()
-
-                # ✅ Wait for page change instead of re-answering
-                old_url = driver.current_url
-                for _ in range(15):  # Check for 15 seconds
-                    time.sleep(1)
-                    if driver.current_url != old_url:
-                        break  # Page has changed
-                else:
-                    print("⚠️ Still on the security question page. NetSuite may be rejecting the login.")
+                driver.find_element(By.CSS_SELECTOR, "input[name='submitter'][type='submit']").click()
+                time.sleep(5)
 
             except Exception as e:
-                print(f"⚠️ Error finding or filling the answer input field: {e}")
+                print(f"⚠️ Error filling the security answer: {e}")
 
-        # ✅ Check if redirected to the dashboard or role selection page
-        time.sleep(5)  # Additional delay for redirection
-        current_url = driver.current_url
-        print(f"🔍 Checking post-login page: {current_url}")
-
-        # ✅ Detect dashboard URL pattern
-        if "dashboard" in current_url or "home.nl" in current_url or "app/center/card.nl" in current_url:
-            print("✅ Login successful! Bot has reached the dashboard.")
-            crawl_netsuite(driver)  # Start crawling immediately
-
-        elif "role" in current_url.lower():
-            print("🔄 Role selection detected! Choosing role...")
-
-            try:
-                # Locate the first available role
-                role_element = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.LINK_TEXT, "Choose Role"))
-                )
-                role_element.click()
-                time.sleep(5)  # Wait for redirection
-                print("✅ Role selected! Proceeding to dashboard.")
-                crawl_netsuite(driver)  # Start crawling after role selection
-
-            except Exception as e:
-                print(f"⚠️ Failed to select role: {e}")
-
-        else:
-            print("❌ Login failed! CAPTCHA or unknown page detected.")
-            print(f"🚨 Please check the browser manually: {current_url}")
-            driver.quit()
-            exit()
+        # ✅ Navigate directly to Admin Item page
+        time.sleep(5)
+        print("✅ Login successful! Navigating to Admin Item...")
+        navigate_to_admin_item(driver)
 
     except Exception as e:
         print(f"⚠️ Error during login: {e}")
         driver.quit()
-        exit()
+
+def navigate_to_admin_item(driver):
+    """Navigates directly to the 'Admin Item' Custom Record page and waits."""
+    driver.get(ADMIN_ITEM_URL)
+    print("🔍 Navigated to Custom Record: 'Admin Item'.")
+
+    try:
+        # Wait until the page loads (adjust selector as needed)
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+
+        # ✅ Keep the page open until the user manually closes
+        print("🔵 Press 'Enter' to close the crawler manually...")
+        input()  # Wait for user input
+        driver.quit()  # Close browser when user presses Enter
+
+    except Exception as e:
+        print(f"⚠️ Error navigating to 'Admin Item': {e}")
 
 def extract_links(driver, url):
     """Extracts all links from a given webpage using BeautifulSoup & requests (faster than Selenium)."""
