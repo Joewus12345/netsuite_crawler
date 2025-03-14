@@ -1,8 +1,9 @@
 from selenium import webdriver
 from crawler import login_netsuite
+from config import HEADLESS_MODE
 
 # ✅ Configure WebDriver (Allow headless mode)
-HEADLESS_MODE = False # Set to True to run in headless mode
+HEADLESS_MODE = HEADLESS_MODE # Set to True to run in headless mode
 
 # Set up WebDriver options
 options = webdriver.ChromeOptions()
