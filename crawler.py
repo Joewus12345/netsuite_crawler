@@ -5,6 +5,7 @@ from selenium.webdriver.support.ui import WebDriverWait  # Handle delays
 from selenium.webdriver.support import expected_conditions as EC  # Handle dynamic elements
 import time  # For delays
 from urllib.parse import urljoin  # Handle URLs
+import requests  # requests for HTTP requests
 from bs4 import BeautifulSoup  # Parses HTML to extract links
 from config import NETSUITE_URL, NETSUITE_EMAIL, NETSUITE_PASSWORD, SECURITY_ANSWER  # Import security question answers
 
@@ -110,18 +111,18 @@ def login_netsuite(driver):
         exit()
 
 def extract_links(driver, url):
-    """Extracts all links from a given webpage using Selenium and BeautifulSoup."""
-    driver.get(url)
-    time.sleep(3)  # Allow page to load
+    """Extracts all links from a given webpage using BeautifulSoup & requests (faster than Selenium)."""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+    except:
+        # Fall back to Selenium if requests fail (e.g., need authentication)
+        driver.get(url)
+        time.sleep(3)
+        soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # Extract all links using Selenium
-    links = set()
-    elements = driver.find_elements(By.TAG_NAME, "a")
-    for elem in elements:
-        href = elem.get_attribute("href")
-        if href:
-            links.add(urljoin(url, href))
-
+    links = {urljoin(url, a["href"]) for a in soup.find_all("a", href=True)}
     return links
 
 def crawl_netsuite(driver):
