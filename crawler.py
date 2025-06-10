@@ -1,4 +1,4 @@
-from selenium import webdriver  # Controls the browser
+# from selenium import webdriver  # Controls the browser
 from selenium.webdriver.common.by import By  # Find elements
 # from selenium.webdriver.common.keys import Keys  # Send input
 from selenium.webdriver.support.ui import WebDriverWait  # Handle delays
@@ -13,12 +13,12 @@ from config import NETSUITE_URL, NETSUITE_EMAIL, NETSUITE_PASSWORD, SECURITY_ANS
 HEADLESS_MODE = HEADLESS_MODE # Set to True to run in headless mode
 
 # Set up WebDriver options
-options = webdriver.ChromeOptions()
-if HEADLESS_MODE:
-    options.add_argument("--headless")  # Enable headless mode
-    options.add_argument("--disable-gpu")  # Necessary for headless on Windows
-    options.add_argument("--window-size=1920,1080")  # Set browser size
-driver = webdriver.Chrome(options=options)
+# options = webdriver.ChromeOptions()
+# if HEADLESS_MODE:
+    # options.add_argument("--headless")  # Enable headless mode
+    # options.add_argument("--disable-gpu")  # Necessary for headless on Windows
+    # options.add_argument("--window-size=1920,1080")  # Set browser size
+# driver = webdriver.Chrome(options=options)
 
 def login_netsuite(driver):
     """Logs into NetSuite, handles 2FA dynamically, and navigates to the 'Admin Item' Custom Record."""
@@ -100,8 +100,8 @@ def login_netsuite(driver):
 
         # ✅ Navigate directly to Admin Item page
         time.sleep(5)
-        print("✅ Login successful! Navigating to Admin Item...")
-        navigate_to_admin_item(driver)
+        print("✅ Login successful! Handing over control to main.py...")
+        # navigate_to_admin_item(driver)
 
     except Exception as e:
         print(f"⚠️ Error during login: {e}")
