@@ -28,9 +28,10 @@ ws.navigate_to_workflow_list(driver)
 # Phase 3: Scrape workflows
 all_actions = []
 for rec in records:
-    if not ws.filter_by_record_type(driver, rec):
-        continue
-    ws.scrape_workflow_for_record(driver, rec, all_actions)
+    if ws.filter_by_record_type(driver, rec):
+        ws.scrape_workflow_for_record(driver, rec, all_actions)
+    else:
+        print(f"➡️ Skipping {rec}")
 
 ws.save_actions(all_actions)
 
