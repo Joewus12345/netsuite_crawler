@@ -249,45 +249,65 @@ def scrape_workflow_for_record(driver, record_name, results):
             time.sleep(0.2)
             continue
 
-        # 7) Scrape that state’s actions (always re-find elements immediately)
-        # re-query count
-        cat_count = len(driver.find_elements(
+        # 7) Grab whatever categories are there *right now* and loop them
+        # re-query count (retrying each one on StaleElementReference)
+        categories = driver.find_elements(
             By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
-        ))
-        for i in range(cat_count):
-            # re-find the i-th category
-            cat = driver.find_elements(
-                By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
-            )
+        )
+        for cat in categories:
+            # retry up to 3 times if cat/text or its children go stale
+            for attempt in range(3):
+                try:
+                    # re-fetch this same element from the live list
+                    label = cat.text.splitlines()[0]
+                    try:
+                        trigger = cat.find_element(
+                            By.CSS_SELECTOR, "span.trigger-row"
+                        ).text
+                    except:
+                        trigger = ""
 
-            # name & trigger
-            category_name = cat.text.splitlines()[0]
-            try:
-                trigger = cat.find_element(
-                    By.CSS_SELECTOR, "span.trigger-row"
-                ).text
-            except:
-                trigger = ""
-            # re-find all action rows under this same category index
-            action_rows = driver.find_elements(
-                By.CSS_SELECTOR, 
-                f"#panel-tab-main.tab.active .category-row:nth-of-type({i+1}) li.action-row"
-            )
-            for act in action_rows:
-                # and re-find each sub-element as you already do
+                    # now get *that exact* cat’s action rows
+                    # by scoping from its parent
+                    actions = cat.find_elements(By.CSS_SELECTOR, "li.action-row")
+
+                    # if we got this far, the element was stable—break retry
+                    break
+
+                except StaleElementReferenceException:
+                    time.sleep(0.3)
+                    # re-fetch the whole categories list and pick the same index
+                    all_cats = driver.find_elements(
+                        By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
+                    )
+                    # best effort: find the one whose label matches
+                    matching = [c for c in all_cats if c.text.startswith(label)]
+                    if matching:
+                        cat = matching[0]
+                    else:
+                        # we can’t find it any more
+                        print(f"⚠️ Lost track of category '{label}', skipping")
+                        actions = []
+                        break
+            else:
+                # after 3 stale retries still bad
+                print(f"⚠️ Couldn't stabilize category '{label}', skipping")
+                continue
+
+            # now iterate its actions
+            for act in actions:
                 name = act.find_element(By.CSS_SELECTOR, "a.action-type").text
                 args = act.find_element(By.CSS_SELECTOR, "span.action-arguments").text
                 cond = act.get_attribute("onmouseover") or ""
                 results.append([
                     record_name,
                     workflow_name,
-                    category_name,
+                    label,
                     trigger,
                     name,
                     args,
                     cond
                 ])
-
         # 8) Collapse State panel and go back to Workflow canvas
         try:
             driver.find_element(By.ID, "panel-tab-switch-workflow").click()
