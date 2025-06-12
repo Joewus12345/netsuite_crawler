@@ -188,6 +188,7 @@ def scrape_workflow_for_record(driver, record_name, results):
     svg_loaded = False
     for attempt in range(1, 4):
         try:
+            # we wait *specifically* for a <rect> in the #diagrammer canvas:
             WebDriverWait(driver, 15).until(
                 EC.visibility_of_element_located((By.CSS_SELECTOR, "#diagrammer svg"))
             )
@@ -207,6 +208,8 @@ def scrape_workflow_for_record(driver, record_name, results):
                 pass
     if not svg_loaded:
         print(f"➡️ Skipping '{record_name}' altogether — diagram never appeared.")
+        # ensure we're back on the list before returning
+        navigate_to_workflow_list(driver)
         return
     
     workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text

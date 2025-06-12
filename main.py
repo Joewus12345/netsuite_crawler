@@ -28,6 +28,8 @@ ws.navigate_to_workflow_list(driver)
 # Phase 3: Scrape workflows
 all_actions = []
 for rec in records:
+    # always get back to the list first
+    ws.navigate_to_workflow_list(driver)
     if ws.filter_by_record_type(driver, rec):
         ws.scrape_workflow_for_record(driver, rec, all_actions)
     else:
