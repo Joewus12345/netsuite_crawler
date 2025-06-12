@@ -184,10 +184,31 @@ def scrape_workflow_for_record(driver, record_name, results):
     except TimeoutException:
         pass
 
-    # 3) Wait for the SVG canvas to become visible
-    WebDriverWait(driver, 15).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, "#diagrammer svg"))
-    )
+    # 3) Wait for the SVG canvas to become visible — retry up to 3 times
+    svg_loaded = False
+    for attempt in range(1, 4):
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "#diagrammer svg"))
+            )
+            svg_loaded = True
+            break
+        except TimeoutException:
+            print(f"⚠️ SVG didn’t appear for '{record_name}' (attempt {attempt}/3)")
+            # go back and re-open this workflow record (in case it reloaded to login/etc)
+            try:
+                navigate_to_workflow_list(driver)
+                # re-click into this same record
+                row = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
+                )
+                row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a.dottedlink").click()
+            except Exception:
+                pass
+    if not svg_loaded:
+        print(f"➡️ Skipping '{record_name}' altogether — diagram never appeared.")
+        return
+    
     workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
 
     # 4) Get the count of <rect> states
