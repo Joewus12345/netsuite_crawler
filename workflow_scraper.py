@@ -126,19 +126,12 @@ def filter_by_record_type(driver, record_name):
     )
 
     # 3. find the “exact” or prefix match
-    match = None
-    for opt in options:
-        if opt["text"] == record_name:
-            match = opt
-            break
+    match = next((opt for opt in options if opt["text"] == record_name), None)
 
     # 4. otherwise, split on spaces and try each word
     if not match:
         first_word = record_name.split()[0].lower()
-        for opt in options:
-            if opt.text.strip().lower().startswith(first_word):
-                match = opt
-                break
+        match = next((opt for opt in options if opt["text"].lower().startswith(first_word)), None)
 
     if not match:
         print(f"⚠️ No dropdown option matched '{record_name}'")
@@ -200,44 +193,88 @@ def scrape_workflow_for_record(driver, record_name, results):
     # 4) Get the count of <rect> states
     rect_count = len(driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect"))
     for idx in range(rect_count):
-        # re-find to avoid stale references
+        # Re-find each loop to avoid stale refs
         rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
         rect = rects[idx]
 
         # scroll it into view
         driver.execute_script("arguments[0].scrollIntoView(true);", rect)
 
-        # click via ActionChains and retry on stale/blocked
+        # 🛠️ Try up to 3 times, falling back to JS click if ActionChains fails
+        clicked = False
         for attempt in range(3):
             try:
                 ActionChains(driver).move_to_element(rect).click().perform()
+                clicked = True
                 break
             except (StaleElementReferenceException, Exception):
                 time.sleep(0.5)
                 rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
                 rect = rects[idx]
-        else:
-            print(f"⚠️ Could not click state #{idx+1} for '{record_name}'")
-            continue
+        if not clicked:
+            # 🛠️ Final fallback to dispatching a DOM click event
+            try:
+                driver.execute_script(
+                    "arguments[0].dispatchEvent(new MouseEvent('click', {bubbles: true}));",
+                    rect
+                )
+                clicked = True
+            except Exception:
+                print(f"⚠️ Could not click state #{idx+1} for '{record_name}'")
+                # skip to next state
+                continue
 
         # 5) Switch into the “State” panel
-        WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
-        ).click()
+        try:
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
+            ).click()
+        except TimeoutException:
+            print(f"⚠️ State tab never appeared for state #{idx+1} in '{record_name}'")
+            # try collapsing back
+            try:
+                driver.find_element(By.ID, "panel-tab-switch-workflow").click()
+            except:
+                pass
+            continue
 
-        # 6) Wait for at least one category‐row
-        WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"))
-        )
+        # 6) Wait for at least one category‐row, then grab a fresh list
+        try:
+            WebDriverWait(driver, 5).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"))
+            )
+        except TimeoutException:
+            print(f"⚠️ No category rows for state #{idx+1} in '{record_name}', skipping")
+            driver.find_element(By.ID, "panel-tab-switch-workflow").click()
+            time.sleep(0.2)
+            continue
 
-        # 7) Scrape that state’s actions
-        for cat in driver.find_elements(By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"):
+        # 7) Scrape that state’s actions (always re-find elements immediately)
+        # re-query count
+        cat_count = len(driver.find_elements(
+            By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
+        ))
+        for i in range(cat_count):
+            # re-find the i-th category
+            cat = driver.find_elements(
+                By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
+            )
+
+            # name & trigger
             category_name = cat.text.splitlines()[0]
             try:
-                trigger = cat.find_element(By.CSS_SELECTOR, "span.trigger-row").text
+                trigger = cat.find_element(
+                    By.CSS_SELECTOR, "span.trigger-row"
+                ).text
             except:
                 trigger = ""
-            for act in cat.find_elements(By.CSS_SELECTOR, "li.action-row"):
+            # re-find all action rows under this same category index
+            action_rows = driver.find_elements(
+                By.CSS_SELECTOR, 
+                f"#panel-tab-main.tab.active .category-row:nth-of-type({i+1}) li.action-row"
+            )
+            for act in action_rows:
+                # and re-find each sub-element as you already do
                 name = act.find_element(By.CSS_SELECTOR, "a.action-type").text
                 args = act.find_element(By.CSS_SELECTOR, "span.action-arguments").text
                 cond = act.get_attribute("onmouseover") or ""
