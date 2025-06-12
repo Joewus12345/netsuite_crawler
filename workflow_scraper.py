@@ -1,6 +1,7 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 import time
 import csv
 import json
@@ -171,55 +172,64 @@ def filter_by_record_type(driver, record_name):
 
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
 def scrape_workflow_for_record(driver, record_name, results):
-    # avoid export buttons; click the Name link
+    # 1. Click into the workflow list (either the Name link or Edit→View)
     try:
-        # by now we know there's at least one <tr.uir-list-row-tr>
         row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
         link = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a.dottedlink")
         link.click()
     except:
-        # fallback: click Edit then View
         try:
-            row = driver.find_element(By.CSS_SELECTOR,"tr.uir-list-row-tr")
-            link = row.find_element(By.CSS_SELECTOR, "td:nth-child(1) a.dottedlink")
-            link.click()
-            WebDriverWait(driver,5).until(EC.element_to_be_clickable((By.CSS_SELECTOR,"input#view.rndbuttoninpt.bntBgT"))).click()
+            row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
+            row.find_element(By.CSS_SELECTOR, "td:nth-child(1) a.dottedlink").click()
         except Exception as e:
             print(f"⚠️ open fail “{record_name}”: {e}")
             return
 
+    # 2. If we land on the Edit page with a “View” button, click it
+    try:
+        view_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input#view.rndbuttoninpt.bntBgT"))
+        )
+        view_btn.click()
+    except TimeoutException:
+        pass  # No view button, assume we are already in the designer
 
-    # Wait for the diagram canvas _and_ the first node to be clickable:
-    WebDriverWait(driver, 15).until_all([
-        EC.presence_of_element_located((By.ID, "workflow-desktop")),
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "g[style*='pointer-events:visiblePainted']"))
-    ])
+    # 3. Wait for the workflow canvas container to appear
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "#workflow-desktop"))
+    )
+    # brief pause for SVG to settle
+    time.sleep(1)
 
+    # 4. Grab all the state‐nodes
+    nodes = driver.find_elements(By.CSS_SELECTOR, "g[style*='pointer-events:visiblePainted']")
     workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
 
-    # iterate each state box
-    nodes = driver.find_elements(By.CSS_SELECTOR, "g[style*='pointer-events:visiblePainted']")
+    # 5. Iterate each state node
     for node in nodes:
-        try:
-            node.click()
-        except:
-            driver.execute_script("arguments[0].scrollIntoView();", node)
-            node.click()
+        # scroll into view & click
+        driver.execute_script("arguments[0].scrollIntoView(true);", node)
+        WebDriverWait(driver, 5).until(EC.element_to_be_clickable(node))
+        node.click()
 
-        WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))).click()
-        time.sleep(1)
+        # 6. Switch to the “State” panel
+        WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
+        ).click()
+        # wait for the State panel to become active and contain at least one category-row
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"))
+        )
 
-        for cat in driver.find_elements(By.CSS_SELECTOR, ".category-row"):
+        # 7. Scrape all categories/actions in the active State panel
+        for cat in driver.find_elements(By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"):
             category_name = cat.text.splitlines()[0]
             try:
-                trigger = cat.find_element(
-                    By.XPATH, ".//span[@class='trigger-row']"
-                ).text
+                trigger = cat.find_element(By.CSS_SELECTOR, "span.trigger-row").text
             except:
                 trigger = ""
 
-            actions = cat.find_elements(By.XPATH, ".//li[@class='action-row']")
-            for act in actions:
+            for act in cat.find_elements(By.CSS_SELECTOR, "li.action-row"):
                 name = act.find_element(By.CSS_SELECTOR, "a.action-type").text
                 args = act.find_element(By.CSS_SELECTOR, "span.action-arguments").text
                 cond = act.get_attribute("onmouseover") or ""
@@ -233,7 +243,7 @@ def scrape_workflow_for_record(driver, record_name, results):
                     cond
                 ])
 
-    # go back to list for next record
+    # 8. Return to the workflow list for the next record
     navigate_to_workflow_list(driver)
 
 def save_actions(results, filename="workflow_actions.csv"):
