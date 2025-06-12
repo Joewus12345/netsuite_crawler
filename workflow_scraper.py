@@ -3,6 +3,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import csv
+import json
 from config import SECURITY_ANSWER, HEADLESS_MODE
 
 # ── Phase 1: HRA Record Types Extraction ────────────────────────────────────
@@ -101,67 +102,87 @@ def navigate_to_workflow_list(driver):
     print("✅ On Workflow List page.")
 
 def filter_by_record_type(driver, record_name):
-    """Expand filters if needed, type record_name, then wait."""
-    try:
-        toggle = driver.find_element(By.CSS_SELECTOR, "span.ns-icon.ns-filters-onoff-button")
-        expanded = toggle.get_attribute("aria-expanded") == "true"
-        if not expanded:
-            toggle.click()
-            WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input#inpt_Workflow_RECORDTYPE_1.dropdownInput.textbox"))
-            )
-        else:
-            # already expanded
-            WebDriverWait(driver, 2).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input#inpt_Workflow_RECORDTYPE_1.dropdownInput.textbox"))
-            )
-    except Exception as e:
-        print(f"⚠️ Could not open filter pane for '{record_name}': {e}")
-        return False
-
-    try:
-        fld = driver.find_element(By.CSS_SELECTOR, "input#inpt_Workflow_RECORDTYPE_1.dropdownInput.textbox")
-        fld.clear()
-        fld.send_keys(record_name)
-        
-        # wait for row to refresh
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR,
-            "#div__body tbody > tr.uir-list-row-even, #div__body tbody > tr.uir-list-row-odd"))
-        )
-        
-        fld.send_keys("\n")
-
-        # Wait for NetSuite to finish the search
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#div__body tbody > tr.uir-list-row-even, #div__body tbody > tr.uir-list-row-odd")))
-
-        # Wait for NetSuite’s “loading…” spinner to disappear
-        WebDriverWait(driver, 15).until(
-            EC.invisibility_of_element_located((By.CSS_SELECTOR, ".uir-list-body-wrapper.scrollarea"))
+    """Open the Record Type dropdown, pick the closest match, then wait for the grid."""
+    # 1. open the filter pane if it isn’t already
+    toggle = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, "span.ns-icon.ns-filters-onoff-button"))
+    )
+    if toggle.get_attribute("aria-expanded") != "true":
+        toggle.click()
+        WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input#inpt_Workflow_RECORDTYPE_1"))
         )
 
-        print(f"🔎 Filter applied for '{record_name}' (and waited 10s)")
-        return True
-    except Exception as e:
-        print(f"⚠️ Error applying filter for '{record_name}': {e}")
+    # 2. grab the ns-dropdown and parse its JSON
+    dd = driver.find_element(
+        By.CSS_SELECTOR,
+        "div.ns-dropdown[data-name='Workflow_RECORDTYPE']"
+    )
+    options = json.loads(
+        dd.get_attribute("data-options")
+          .replace('&quot;', '"')  # un-HTML-encode
+    )
+
+    # 3. collect all visible option elements
+    # options = WebDriverWait(driver, 5).until(
+    #     EC.visibility_of_all_elements_located((By.CSS_SELECTOR, ".uir-field-tooltip-wrapper .dropdownDiv"))
+    # )
+
+    # 3. find the “exact” or prefix match
+    match = None
+    for opt in options:
+        if opt["text"] == record_name:
+            match = opt
+            break
+
+    # 4. otherwise, split on spaces and try each word
+    if not match:
+        first_word = record_name.split()[0].lower()
+        for opt in options:
+            if opt.text.strip().lower().startswith(first_word):
+                match = opt
+                break
+
+    if not match:
+        print(f"⚠️ No dropdown option matched '{record_name}'")
         return False
+
+    # 5. set the hidden input and fire its onchange
+    driver.execute_script("""
+        let val = arguments[0];
+        let input = document.getElementById('hddn_Workflow_RECORDTYPE_1');
+        input.value = val;
+        input.onchange();  // this will reload the grid for you
+    """, match["value"])
+
+    # 6. wait for either a data‐row or the “no data” cell
+    WebDriverWait(driver, 10).until(lambda d:
+        d.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr") or
+        d.find_elements(By.CSS_SELECTOR, "td.uir-nodata-cell")
+    )
+
+    # 7. detect “no data”
+    if driver.find_elements(By.CSS_SELECTOR, "td.uir-nodata-cell"):
+        print(f"➡️ No workflows for '{record_name}'")
+        return False
+
+    print(f"🔎 Filter applied via JS to '{match['text']}'")
+    return True
 
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
 def scrape_workflow_for_record(driver, record_name, results):
     # avoid export buttons; click the Name link
     try:
-        row = driver.find_elements(By.CSS_SELECTOR, 
-        "#div__body tbody > tr.uir-list-row-even td:nth-child(2) a.dottedlink,"
-        "#div__body tbody > tr.uir-list-row-odd  td:nth-child(2) a.dottedlink"
-        )
-        row[0].click()
+        # by now we know there's at least one <tr.uir-list-row-tr>
+        row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
+        link = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a.dottedlink")
+        link.click()
     except:
         # fallback: click Edit then View
         try:
-            driver.find_element(By.CSS_SELECTOR,
-                "#div__body tbody > tr.uir-list-row-even td:nth-child(1) a.dottedlink,"
-                "#div__body tbody > tr.uir-list-row-odd  td:nth-child(1) a.dottedlink"
-            ).click()
+            row = driver.find_element(By.CSS_SELECTOR,"tr.uir-list-row-tr")
+            link = row.find_element(By.CSS_SELECTOR, "td:nth-child(1) a.dottedlink")
+            link.click()
             WebDriverWait(driver,5).until(EC.element_to_be_clickable((By.CSS_SELECTOR,"input#view.rndbuttoninpt.bntBgT"))).click()
         except Exception as e:
             print(f"⚠️ open fail “{record_name}”: {e}")

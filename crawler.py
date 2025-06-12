@@ -99,7 +99,7 @@ def login_netsuite(driver):
                 print(f"⚠️ Error filling the security answer: {e}")
 
         # ✅ Navigate directly to Admin Item page
-        time.sleep(5)
+        # time.sleep(5)
         print("✅ Login successful! Handing over control to main.py...")
         # navigate_to_admin_item(driver)
 
