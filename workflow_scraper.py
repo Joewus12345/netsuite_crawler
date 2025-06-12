@@ -1,7 +1,8 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.webdriver.common.action_chains import ActionChains
 import time
 import csv
 import json
@@ -124,11 +125,6 @@ def filter_by_record_type(driver, record_name):
           .replace('&quot;', '"')  # un-HTML-encode
     )
 
-    # 3. collect all visible option elements
-    # options = WebDriverWait(driver, 5).until(
-    #     EC.visibility_of_all_elements_located((By.CSS_SELECTOR, ".uir-field-tooltip-wrapper .dropdownDiv"))
-    # )
-
     # 3. find the “exact” or prefix match
     match = None
     for opt in options:
@@ -172,63 +168,75 @@ def filter_by_record_type(driver, record_name):
 
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
 def scrape_workflow_for_record(driver, record_name, results):
-    # 1. Click into the workflow list (either the Name link or Edit→View)
+    # 1) Open the workflow (Name link → maybe View button)
     try:
         row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
-        link = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a.dottedlink")
-        link.click()
+        row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a.dottedlink").click()
     except:
         try:
             row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
             row.find_element(By.CSS_SELECTOR, "td:nth-child(1) a.dottedlink").click()
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input#view.rndbuttoninpt.bntBgT"))
+            ).click()
         except Exception as e:
             print(f"⚠️ open fail “{record_name}”: {e}")
             return
 
-    # 2. If we land on the Edit page with a “View” button, click it
+    # 2) Make sure the Workflow tab is active
     try:
-        view_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "input#view.rndbuttoninpt.bntBgT"))
-        )
-        view_btn.click()
+        WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.ID, "panel-tab-switch-workflow"))
+        ).click()
     except TimeoutException:
-        pass  # No view button, assume we are already in the designer
+        pass
 
-    # 3. Wait for the workflow canvas container to appear
+    # 3) Wait for the SVG canvas to become visible
     WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "#workflow-desktop"))
+        EC.visibility_of_element_located((By.CSS_SELECTOR, "#diagrammer svg"))
     )
-    # brief pause for SVG to settle
-    time.sleep(1)
-
-    # 4. Grab all the state‐nodes
-    nodes = driver.find_elements(By.CSS_SELECTOR, "g[style*='pointer-events:visiblePainted']")
     workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
 
-    # 5. Iterate each state node
-    for node in nodes:
-        # scroll into view & click
-        driver.execute_script("arguments[0].scrollIntoView(true);", node)
-        WebDriverWait(driver, 5).until(EC.element_to_be_clickable(node))
-        node.click()
+    # 4) Get the count of <rect> states
+    rect_count = len(driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect"))
+    for idx in range(rect_count):
+        # re-find to avoid stale references
+        rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
+        rect = rects[idx]
 
-        # 6. Switch to the “State” panel
+        # scroll it into view
+        driver.execute_script("arguments[0].scrollIntoView(true);", rect)
+
+        # click via ActionChains and retry on stale/blocked
+        for attempt in range(3):
+            try:
+                ActionChains(driver).move_to_element(rect).click().perform()
+                break
+            except (StaleElementReferenceException, Exception):
+                time.sleep(0.5)
+                rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
+                rect = rects[idx]
+        else:
+            print(f"⚠️ Could not click state #{idx+1} for '{record_name}'")
+            continue
+
+        # 5) Switch into the “State” panel
         WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
         ).click()
-        # wait for the State panel to become active and contain at least one category-row
+
+        # 6) Wait for at least one category‐row
         WebDriverWait(driver, 5).until(
             EC.visibility_of_element_located((By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"))
         )
 
-        # 7. Scrape all categories/actions in the active State panel
+        # 7) Scrape that state’s actions
         for cat in driver.find_elements(By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"):
             category_name = cat.text.splitlines()[0]
             try:
                 trigger = cat.find_element(By.CSS_SELECTOR, "span.trigger-row").text
             except:
                 trigger = ""
-
             for act in cat.find_elements(By.CSS_SELECTOR, "li.action-row"):
                 name = act.find_element(By.CSS_SELECTOR, "a.action-type").text
                 args = act.find_element(By.CSS_SELECTOR, "span.action-arguments").text
@@ -243,7 +251,14 @@ def scrape_workflow_for_record(driver, record_name, results):
                     cond
                 ])
 
-    # 8. Return to the workflow list for the next record
+        # 8) Collapse State panel and go back to Workflow canvas
+        try:
+            driver.find_element(By.ID, "panel-tab-switch-workflow").click()
+            time.sleep(0.3)
+        except:
+            pass
+
+    # 9) Finally go back to the workflow‐list for the next record
     navigate_to_workflow_list(driver)
 
 def save_actions(results, filename="workflow_actions.csv"):
