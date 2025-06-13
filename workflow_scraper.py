@@ -202,6 +202,29 @@ def safe_get_attr(base, attr, retries=2, delay=0.1):
             time.sleep(delay)
     return ""
 
+def build_state_label_map(driver):
+    """
+    Scans the #diagrammer SVG for every <rect> and its matching <g transform="translate(x y)">
+    that contains the node-label text. Returns a dict keyed by (x,y) strings → text.
+    """
+    svg = driver.find_element(By.CSS_SELECTOR, "#diagrammer svg")
+    label_map = {}
+    # 1) First grab every <g> with a text inside
+    for g in svg.find_elements(By.CSS_SELECTOR, "g"):
+        tf = g.get_attribute("transform") or ""
+        m = re.match(r"translate\(\s*([\d.]+)\s+([\d.]+)\s*\)", tf)
+        if not m:
+            continue
+        x, y = m.groups()
+        # look for any <tspan> under this g
+        tspans = g.find_elements(By.TAG_NAME, "tspan")
+        if not tspans:
+            continue
+        # join multiline labels
+        text = "\n".join(t.text for t in tspans).strip()
+        # store under this key
+        label_map[(x, y)] = text
+    return label_map
 
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
 def scrape_workflow_for_record(driver, record_name, results):
@@ -263,12 +286,20 @@ def scrape_workflow_for_record(driver, record_name, results):
     except Exception:
         workflow_name = ""
 
+    # Build the map once per workflow
+    state_labels = build_state_label_map(driver)
+
     # 4) Get the count of <rect> states
     rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
     for state_index in range(len(rects)):
         # always re-find & click
         try:
             rect = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")[state_index]
+            x = rect.get_attribute("x")
+            y = rect.get_attribute("y")
+            # lookup the label (fall back to empty)
+            state_name = state_labels.get((x, y), "")
+            print(f"    → State #{state_index+1} at ({x},{y}) = “{state_name}”")
             driver.execute_script("arguments[0].scrollIntoView(true);", rect)
             ActionChains(driver).move_to_element(rect).click().perform()
         except Exception:
@@ -350,6 +381,7 @@ def scrape_workflow_for_record(driver, record_name, results):
                     results.append([
                         record_name,
                         workflow_name,
+                        state_name,
                         category_name,
                         trigger_name,
                         name,
@@ -371,6 +403,6 @@ def scrape_workflow_for_record(driver, record_name, results):
 def save_actions(results, filename="workflow_actions.csv"):
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Record Type","Workflow","Category","Trigger","Action","Arguments","Condition"])
+        writer.writerow(["Record Type","Workflow","State","Category","Trigger","Action","Arguments","Condition"])
         writer.writerows(results)
     print(f"📂 Saved actions to {filename}")
