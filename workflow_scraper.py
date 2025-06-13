@@ -1,11 +1,12 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 import csv
 import json
+import re
 from config import SECURITY_ANSWER, HEADLESS_MODE
 
 # ── Phase 1: HRA Record Types Extraction ────────────────────────────────────
@@ -159,8 +160,51 @@ def filter_by_record_type(driver, record_name):
     print(f"🔎 Filter applied via JS to '{match['text']}'")
     return True
 
+#— helper to grab the last <span class="action-arguments"> or fall back into the onmouseover JS
+def extract_action_arguments(act_el):
+    # 1) try the visible span
+    try:
+        return act_el.find_element(By.CSS_SELECTOR, "span.action-arguments").text.strip()
+    except NoSuchElementException:
+        pass
+
+    # 2) fallback: parse the onmouseover payload
+    onmouse = act_el.get_attribute("onmouseover") or ""
+    m = re.search(r"actionArguments:\s*'([^']*)'", onmouse)
+    if m:
+        return m.group(1).strip()
+
+    # 3) nothing found
+    return ""
+
+def safe_find_text(base, by, selector, retries=3, delay=0.2):
+    """
+    Try up to `retries` times to find `.find_element(by, selector).text` on `base`,
+    sleeping `delay` seconds between attempts. Returns "" on total failure.
+    """
+    for _ in range(retries):
+        try:
+            return base.find_element(by, selector).text
+        except (StaleElementReferenceException, NoSuchElementException):
+            time.sleep(delay)
+    return ""
+
+def safe_get_attr(base, attr, retries=2, delay=0.1):
+    """
+    Try up to `retries` times to read `base.get_attribute(attr)`,
+    sleeping `delay` between attempts. Returns "" on failure.
+    """
+    for _ in range(retries):
+        try:
+            return base.get_attribute(attr) or ""
+        except StaleElementReferenceException:
+            time.sleep(delay)
+    return ""
+
+
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
 def scrape_workflow_for_record(driver, record_name, results):
+    print(f"🔍 Starting scrape for '{record_name}'")
     # 1) Open the workflow (Name link → maybe View button)
     try:
         row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr")
@@ -212,126 +256,107 @@ def scrape_workflow_for_record(driver, record_name, results):
         navigate_to_workflow_list(driver)
         return
     
-    workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
+    # grab the workflow's name for logging
+    try:
+        workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
+    except Exception:
+        workflow_name = ""
 
     # 4) Get the count of <rect> states
-    rect_count = len(driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect"))
-    for idx in range(rect_count):
-        # Re-find each loop to avoid stale refs
-        rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
-        rect = rects[idx]
+    rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
+    for state_index in range(len(rects)):
+        # always re-find & click
+        try:
+            rect = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")[state_index]
+            driver.execute_script("arguments[0].scrollIntoView(true);", rect)
+            ActionChains(driver).move_to_element(rect).click().perform()
+        except Exception:
+            print(f"⚠️ Couldn’t click state #{state_index+1}, skipping")
+            continue
 
-        # scroll it into view
-        driver.execute_script("arguments[0].scrollIntoView(true);", rect)
-
-        # 🛠️ Try up to 3 times, falling back to JS click if ActionChains fails
-        clicked = False
-        for attempt in range(3):
-            try:
-                ActionChains(driver).move_to_element(rect).click().perform()
-                clicked = True
-                break
-            except (StaleElementReferenceException, Exception):
-                time.sleep(0.5)
-                rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
-                rect = rects[idx]
-        if not clicked:
-            # 🛠️ Final fallback to dispatching a DOM click event
-            try:
-                driver.execute_script(
-                    "arguments[0].dispatchEvent(new MouseEvent('click', {bubbles: true}));",
-                    rect
-                )
-                clicked = True
-            except Exception:
-                print(f"⚠️ Could not click state #{idx+1} for '{record_name}'")
-                # skip to next state
-                continue
-
-        # 5) Switch into the “State” panel
+        # switch to State panel & Actions sub-tab
         try:
             WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
             ).click()
-        except TimeoutException:
-            print(f"⚠️ State tab never appeared for state #{idx+1} in '{record_name}'")
-            # try collapsing back
-            try:
-                driver.find_element(By.ID, "panel-tab-switch-workflow").click()
-            except:
-                pass
-            continue
-
-        # 6) Wait for at least one category‐row, then grab a fresh list
-        try:
             WebDriverWait(driver, 5).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"))
+                EC.element_to_be_clickable((By.ID, "state-info-button-actions"))
+            ).click()
+
+            # wait for categories to render
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "#state-info-tab-actions ul > li"))
             )
-        except TimeoutException:
-            print(f"⚠️ No category rows for state #{idx+1} in '{record_name}', skipping")
-            driver.find_element(By.ID, "panel-tab-switch-workflow").click()
-            time.sleep(0.2)
+        except Exception:
+            print(f"⚠️ Couldn’t open Actions panel for state #{state_index+1}, skipping")
             continue
 
-        # 7) Grab whatever categories are there *right now* and loop them
-        # re-query count (retrying each one on StaleElementReference)
-        categories = driver.find_elements(
-            By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
-        )
-        for cat in categories:
-            # retry up to 3 times if cat/text or its children go stale
-            for attempt in range(3):
-                try:
-                    # re-fetch this same element from the live list
-                    label = cat.text.splitlines()[0]
-                    try:
-                        trigger = cat.find_element(
-                            By.CSS_SELECTOR, "span.trigger-row"
-                        ).text
-                    except:
-                        trigger = ""
-
-                    # now get *that exact* cat’s action rows
-                    # by scoping from its parent
-                    actions = cat.find_elements(By.CSS_SELECTOR, "li.action-row")
-
-                    # if we got this far, the element was stable—break retry
-                    break
-
-                except StaleElementReferenceException:
-                    time.sleep(0.3)
-                    # re-fetch the whole categories list and pick the same index
-                    all_cats = driver.find_elements(
-                        By.CSS_SELECTOR, "#panel-tab-main.tab.active .category-row"
-                    )
-                    # best effort: find the one whose label matches
-                    matching = [c for c in all_cats if c.text.startswith(label)]
-                    if matching:
-                        cat = matching[0]
-                    else:
-                        # we can’t find it any more
-                        print(f"⚠️ Lost track of category '{label}', skipping")
-                        actions = []
-                        break
-            else:
-                # after 3 stale retries still bad
-                print(f"⚠️ Couldn't stabilize category '{label}', skipping")
+        # 5) Categories
+        cats = driver.find_elements(By.CSS_SELECTOR, "#state-info-tab-actions > ul > li")
+        print(f"      → Found {len(cats)} categories")
+        for cat_el in cats:
+            # category name
+            try:
+                category_name = cat_el.find_element(
+                    By.CSS_SELECTOR, "span.category-row"
+                ).text
+            except NoSuchElementException:
                 continue
+            print(f"        • Category: {category_name}")
 
-            # now iterate its actions
-            for act in actions:
-                name = act.find_element(By.CSS_SELECTOR, "a.action-type").text
-                args = act.find_element(By.CSS_SELECTOR, "span.action-arguments").text
-                cond = act.get_attribute("onmouseover") or ""
-                results.append([
-                    record_name,
-                    workflow_name,
-                    label,
-                    trigger,
-                    name,
-                    args,
-                    cond
-                ])
+            # 5) Triggers under this category
+            triggers = cat_el.find_elements(By.CSS_SELECTOR, ":scope > ul > li")
+            print(f"           ↳ {len(triggers)} triggers")
+
+            for trig_el in triggers:
+                # extract trigger label using safe_find_text (never .text directly)
+                trigger_label = safe_find_text(trig_el, By.CSS_SELECTOR, "span.trigger-row")
+                print(f"             – Trigger: {trigger_label}")
+
+                # 6) Actions under this trigger
+                # retry once if stale, but do NOT break out of the outer loops
+                for attempt in range(2):
+                    try:
+                        action_rows = trig_el.find_elements(By.CSS_SELECTOR, ":scope > ul > li.action-row")
+                        break
+                    except StaleElementReferenceException:
+                        time.sleep(0.2)
+                        print(f"⚠️ Couldn't stabilize actions under trigger '{trigger_label}', skipping")
+                else:
+                    #both retries failed: skip this trigger entirely
+                    print(f"⚠️ Skipping trigger '{trigger_label}' due to repeated staleness")
+                    continue # go to next trig_el
+
+                print(f"                ↪ {len(action_rows)} actions")
+                for act_el in action_rows:
+                    # 1) Read the action name (if this fails, skip this action)
+                    name = safe_find_text(act_el, By.CSS_SELECTOR, "a.action-type")
+                    if not name:
+                        print(f"   ⚠️ Couldn’t read action name in “{trigger_label}”, skipping this action")
+                        continue
+
+                    # 2) Read the arguments via helper (fall back to empty on error)
+                    args = safe_find_text(act_el, By.CSS_SELECTOR, "span.action-arguments")
+                    if not args:
+                        # fallback to onmouseover payload
+                        onmouse = safe_get_attr(act_el, "onmouseover")
+                        m = re.search(r"actionArguments:\s*'([^']*)'", onmouse or "")
+                        args = (m.group(1) if m else "").strip()
+
+                    # 3) Read the onmouseover condition (retry once if stale)
+                    cond = safe_get_attr(act_el, "onmouseover")
+
+                    # 4) Append the row
+                    results.append([
+                        record_name,
+                        workflow_name,
+                        category_name,
+                        trigger_label,
+                        name,
+                        args,
+                        cond
+                    ])
+
         # 8) Collapse State panel and go back to Workflow canvas
         try:
             driver.find_element(By.ID, "panel-tab-switch-workflow").click()
@@ -341,6 +366,7 @@ def scrape_workflow_for_record(driver, record_name, results):
 
     # 9) Finally go back to the workflow‐list for the next record
     navigate_to_workflow_list(driver)
+    print(f"✅ Finished scrape for '{record_name}'\n")
 
 def save_actions(results, filename="workflow_actions.csv"):
     with open(filename, "w", newline="", encoding="utf-8") as f:
