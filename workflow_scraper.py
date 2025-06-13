@@ -127,19 +127,41 @@ def filter_by_record_type(driver, record_name):
           .replace('&quot;', '"')  # un-HTML-encode
     )
 
-    # 3. find the “exact” or prefix match
+    # 3. try an exact (case‐sensitive) match
     match = next((opt for opt in options if opt["text"] == record_name), None)
-
-    # 4. otherwise, split on spaces and try each word
     if not match:
-        first_word = record_name.split()[0].lower()
-        match = next((opt for opt in options if opt["text"].lower().startswith(first_word)), None)
+        # 4. try case‐insensitive exact
+        lower = record_name.lower()
+        match = next((opt for opt in options if opt["text"].lower() == lower), None)
+
+    # 5. try case‐insensitive 'startswith full record_name'
+    if not match:
+        match = next((opt for opt in options
+                      if opt["text"].lower().startswith(record_name.lower())), None)
+
+    # 6. fall back to multi-word prefixes (first N words, N decreasing)
+    if not match:
+        parts = record_name.split()
+        # try prefixes of length len(parts)-1, len(parts)-2, ..., down to 2
+        for L in range(len(parts)-1, 1, -1):
+            prefix = " ".join(parts[:L]).lower()
+            match = next((opt for opt in options if opt["text"].lower().startswith(prefix)), None)
+            if match:
+                print(f"⚠️ Fallback matched on prefix '{prefix}'")
+                break
+
+    # 7. *only now* fall back to single‐word prefix
+    if not match:
+        first = record_name.split()[0].lower()
+        match = next((opt for opt in options if opt["text"].lower().startswith(first)), None)
+        if match:
+            print(f"⚠️ Last‐resort single‐word fallback matched on '{first}'")
 
     if not match:
         print(f"⚠️ No dropdown option matched '{record_name}'")
         return False
 
-    # 5. set the hidden input and fire its onchange
+    # 8. set the hidden input and fire its onchange
     driver.execute_script("""
         let val = arguments[0];
         let input = document.getElementById('hddn_Workflow_RECORDTYPE_1');
@@ -147,19 +169,18 @@ def filter_by_record_type(driver, record_name):
         input.onchange();  // this will reload the grid for you
     """, match["value"])
 
-    # 6. wait for either a data‐row or the “no data” cell
+    # 9. wait for either a data‐row or the “no data” cell
     WebDriverWait(driver, 10).until(lambda d:
         d.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr") or
         d.find_elements(By.CSS_SELECTOR, "td.uir-nodata-cell")
     )
 
-    # 7. detect “no data”
+    # 10. detect “no data”
     if driver.find_elements(By.CSS_SELECTOR, "td.uir-nodata-cell"):
         print(f"➡️ No workflows for '{record_name}'")
         return False
 
     print(f"🔎 Filter applied via JS to '{match['text']}'")
-    time.sleep(2)
     return True
 
 #— helper to grab the last <span class="action-arguments"> or fall back into the onmouseover JS
