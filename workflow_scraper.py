@@ -7,6 +7,7 @@ import time
 import csv
 import json
 import re
+from bs4 import BeautifulSoup
 from config import SECURITY_ANSWER, HEADLESS_MODE
 
 # ── Phase 1: HRA Record Types Extraction ────────────────────────────────────
@@ -291,67 +292,66 @@ def scrape_workflow_for_record(driver, record_name, results):
             print(f"⚠️ Couldn’t open Actions panel for state #{state_index+1}, skipping")
             continue
 
-        # 5) Categories
-        cats = driver.find_elements(By.CSS_SELECTOR, "#state-info-tab-actions > ul > li")
-        print(f"      → Found {len(cats)} categories")
-        for cat_el in cats:
-            # category name
+        # 5) Categories (Grab the number of categories)
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "#state-info-tab-actions"))
+        )
+
+        # retry grabbing the panel’s HTML up to 3 times in case it goes stale
+        panel_html = None
+        for _ in range(3):
             try:
-                category_name = cat_el.find_element(
-                    By.CSS_SELECTOR, "span.category-row"
-                ).text
-            except NoSuchElementException:
-                continue
+                panel = driver.find_element(By.CSS_SELECTOR, "#state-info-tab-actions")
+                panel_html = panel.get_attribute("innerHTML")
+                break
+            except StaleElementReferenceException:
+                time.sleep(0.2)
+
+        if not panel_html:
+            print(f"⚠️ Couldn’t stabilize Actions panel for '{record_name}', skipping state")
+            # collapse back and continue
+            driver.find_element(By.ID, "panel-tab-switch-workflow").click()
+            continue
+
+        # ————————— PARSE WITH BEAUTIFULSOUP —————————
+        soup = BeautifulSoup(panel_html, "html.parser")
+
+        # Loop categories
+        for cat_li in soup.select("ul > li"):
+            cat_label = cat_li.select_one("span.category-row")
+            category_name = cat_label.get_text(strip=True) if cat_label else "<unnamed>"
             print(f"        • Category: {category_name}")
 
-            # 5) Triggers under this category
-            triggers = cat_el.find_elements(By.CSS_SELECTOR, ":scope > ul > li")
-            print(f"           ↳ {len(triggers)} triggers")
+            # Loop triggers
+            for trig_li in cat_li.select(":scope > ul > li"):
+                trig_label = trig_li.select_one("span.trigger-row")
+                trigger_name = trig_label.get_text(strip=True) if trig_label else "<none>"
+                print(f"           ↳ Trigger: {trigger_name}")
 
-            for trig_el in triggers:
-                # extract trigger label using safe_find_text (never .text directly)
-                trigger_label = safe_find_text(trig_el, By.CSS_SELECTOR, "span.trigger-row")
-                print(f"             – Trigger: {trigger_label}")
+                # Loop actions
+                for action_li in trig_li.select("ul > li.action-row"):
+                    # action name
+                    at = action_li.select_one("a.action-type")
+                    name = at.get_text(strip=True) if at else "<no name>"
 
-                # 6) Actions under this trigger
-                # retry once if stale, but do NOT break out of the outer loops
-                for attempt in range(2):
-                    try:
-                        action_rows = trig_el.find_elements(By.CSS_SELECTOR, ":scope > ul > li.action-row")
-                        break
-                    except StaleElementReferenceException:
-                        time.sleep(0.2)
-                        print(f"⚠️ Couldn't stabilize actions under trigger '{trigger_label}', skipping")
-                else:
-                    #both retries failed: skip this trigger entirely
-                    print(f"⚠️ Skipping trigger '{trigger_label}' due to repeated staleness")
-                    continue # go to next trig_el
+                    # arguments
+                    arg_span = action_li.select_one("span.action-arguments")
+                    if arg_span:
+                        args = arg_span.get_text(strip=True)
+                    else:
+                        onmouse = action_li.get("onmouseover", "")
+                        m = re.search(r"actionArguments:\s*'([^']*)'", onmouse)
+                        args = m.group(1) if m else ""
 
-                print(f"                ↪ {len(action_rows)} actions")
-                for act_el in action_rows:
-                    # 1) Read the action name (if this fails, skip this action)
-                    name = safe_find_text(act_el, By.CSS_SELECTOR, "a.action-type")
-                    if not name:
-                        print(f"   ⚠️ Couldn’t read action name in “{trigger_label}”, skipping this action")
-                        continue
+                    # condition
+                    cond = action_li.get("onmouseover", "")
 
-                    # 2) Read the arguments via helper (fall back to empty on error)
-                    args = safe_find_text(act_el, By.CSS_SELECTOR, "span.action-arguments")
-                    if not args:
-                        # fallback to onmouseover payload
-                        onmouse = safe_get_attr(act_el, "onmouseover")
-                        m = re.search(r"actionArguments:\s*'([^']*)'", onmouse or "")
-                        args = (m.group(1) if m else "").strip()
-
-                    # 3) Read the onmouseover condition (retry once if stale)
-                    cond = safe_get_attr(act_el, "onmouseover")
-
-                    # 4) Append the row
+                    print(f"              ↪ Action: {name} | args={args}")
                     results.append([
                         record_name,
                         workflow_name,
                         category_name,
-                        trigger_label,
+                        trigger_name,
                         name,
                         args,
                         cond
@@ -363,10 +363,10 @@ def scrape_workflow_for_record(driver, record_name, results):
             time.sleep(0.3)
         except:
             pass
+    print(f"✅ Finished scrape for '{record_name}'\n")
 
     # 9) Finally go back to the workflow‐list for the next record
     navigate_to_workflow_list(driver)
-    print(f"✅ Finished scrape for '{record_name}'\n")
 
 def save_actions(results, filename="workflow_actions.csv"):
     with open(filename, "w", newline="", encoding="utf-8") as f:
