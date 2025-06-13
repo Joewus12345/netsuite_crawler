@@ -159,6 +159,7 @@ def filter_by_record_type(driver, record_name):
         return False
 
     print(f"🔎 Filter applied via JS to '{match['text']}'")
+    time.sleep(2)
     return True
 
 #— helper to grab the last <span class="action-arguments"> or fall back into the onmouseover JS
