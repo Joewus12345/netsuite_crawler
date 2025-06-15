@@ -224,24 +224,43 @@ def safe_get_attr(base, attr, retries=2, delay=0.1):
             time.sleep(delay)
     return ""
 
-def reset_scroll_to_top(driver, max_clicks=20, pause=0.1):
+def reset_scroll_to_top(driver, max_clicks=30, pause=0.1, wait_timeout=5):
     """
-    If NetSuite’s vertical scrollbar is already at the bottom, click ▲
-    until it reaches the very top (or until max_clicks).
+    Click the ▲ button up to max_clicks times, then wait until
+    the NetSuite scroll pane's scrollTop is 0 before returning.
     """
     try:
         up = driver.find_element(By.CSS_SELECTOR, ".yfiles-button-up")
     except NoSuchElementException:
-        # no scrollbar present
+        # no scrollbar present at all
         return
 
+    # hammer the up arrow a few times
     for _ in range(max_clicks):
         try:
             up.click()
             time.sleep(pause)
         except ElementNotInteractableException:
-            # arrow has gone inactive (we’re at the top)
+            # we've reached the top
             break
+
+    # now wait for scrollTop to become zero
+    def scroll_at_top(drv):
+        # returns True when pane.scrollTop == 0
+        return drv.execute_script("""
+            let pane = document.querySelector('#diagrammer .yfiles-scrollbar-range-vertical');
+            return pane && pane.scrollTop === 0;
+        """)
+
+    try:
+        WebDriverWait(driver, wait_timeout).until(scroll_at_top)
+    except TimeoutException:
+        # still give it one final nudge in JS
+        driver.execute_script("""
+            let pane = document.querySelector('#diagrammer .yfiles-scrollbar-range-vertical');
+            if (pane) pane.scrollTop = 0;
+        """)
+        # no need to wait longer
 
 def ensure_rect_visible(driver, raw_x, raw_y, max_scrolls=15):
     """
@@ -355,9 +374,6 @@ def scrape_workflow_for_record(driver, record_name, results):
     except TimeoutException:
         pass
 
-    # NEW: make sure we start with the canvas scrolled *all the way* to its top
-    reset_scroll_to_top(driver)
-
     # 3) Wait for the SVG canvas to become visible — retry up to 3 times
     svg_loaded = False
     for attempt in range(1, 4):
@@ -386,6 +402,11 @@ def scrape_workflow_for_record(driver, record_name, results):
         navigate_to_workflow_list(driver)
         return
     
+    # **Now** that the SVG (and its scrollbar) is really there, reset to top
+    reset_scroll_to_top(driver)
+    # small buffer for the DOM to re-render at the new scroll position
+    time.sleep(0.5)
+
     # grab the workflow's name for logging
     try:
         workflow_name = driver.find_element(By.CSS_SELECTOR, "#workflow-title .name").text
