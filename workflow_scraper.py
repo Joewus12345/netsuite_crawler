@@ -224,24 +224,60 @@ def safe_get_attr(base, attr, retries=2, delay=0.1):
             time.sleep(delay)
     return ""
 
-def ensure_rect_visible(driver, rect):
-    # this scrollIntoView will handle the horizontal/diagram scrollbars
-    driver.execute_script(
-        "arguments[0].scrollIntoView({block:'center', inline:'center'})", rect
-    )
-    # now also nudge the y-files vertical scroll pane
-    # find the containing scrollable viewport:
-    pane = driver.find_element(
-        By.CSS_SELECTOR,
-        "#diagrammer > div.yfiles-scrollbar-vertical .yfiles-scrollbar-range-vertical"
-    )
-    # Figure out how far the rect is from the top of that pane...
-    y = driver.execute_script("""
-        let [r, p] = arguments;
-        let rb = r.getBoundingClientRect(), pb = p.getBoundingClientRect();
-        return (rb.top - pb.top) + p.scrollTop - (pb.height / 2);
-    """, rect, pane)
-    driver.execute_script("arguments[0].scrollTop = arguments[1];", pane, y)
+def ensure_rect_visible(driver, raw_x, raw_y, max_scrolls=15):
+    """
+    Scroll the diagram vertically (via NetSuite's ▲▼ buttons) until
+    the rect at (raw_x, raw_y) is within the SVG viewport, or until
+    we've clicked max_scrolls times.
+    Returns the now-visible WebElement, or raises if it never appeared.
+    """
+    # 1) Horizontal centering in case it's off to the side:
+    rect_css = f"#diagrammer svg rect[x='{raw_x}'][y='{raw_y}']"
+    try:
+        # find once just to center horizontally
+        r0 = driver.find_element(By.CSS_SELECTOR, rect_css)
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center', inline:'center'})", r0
+        )
+    except NoSuchElementException:
+        # if it's not in the DOM at all, bail
+        raise RuntimeError(f"Could not find rect at ({raw_x},{raw_y}) in DOM")
+
+    up_btn   = driver.find_element(By.CSS_SELECTOR, ".yfiles-button-up")
+    down_btn = driver.find_element(By.CSS_SELECTOR, ".yfiles-button-down")
+
+    def is_visible():
+        try:
+            r = driver.find_element(By.CSS_SELECTOR, rect_css)
+            return driver.execute_script("""
+                const el = arguments[0],
+                      svg = document.querySelector("#diagrammer svg"),
+                      eb = el.getBoundingClientRect(),
+                      vb = svg.getBoundingClientRect();
+                return eb.top >= vb.top && eb.bottom <= vb.bottom;
+            """, r)
+        except (StaleElementReferenceException, NoSuchElementException):
+            return False
+
+    # If already in view, return it
+    if is_visible():
+        return driver.find_element(By.CSS_SELECTOR, rect_css)
+
+    # Otherwise, page down until we see it
+    for _ in range(max_scrolls):
+        down_btn.click()
+        time.sleep(0.2)
+        if is_visible():
+            return driver.find_element(By.CSS_SELECTOR, rect_css)
+
+    # Try paging up in case we overshot
+    for _ in range(max_scrolls):
+        up_btn.click()
+        time.sleep(0.2)
+        if is_visible():
+            return driver.find_element(By.CSS_SELECTOR, rect_css)
+
+    raise RuntimeError(f"Couldn’t scroll rect ({raw_x},{raw_y}) into view")
 
 def build_state_label_map(driver):
     """
@@ -342,7 +378,7 @@ def scrape_workflow_for_record(driver, record_name, results):
         print(f"→ State #{idx} at ({x},{y}) = “{state_name}”")
 
         # scroll it fully into view (even if it's in the overflow pane)
-        ensure_rect_visible(driver, rect)
+        rect = ensure_rect_visible(driver, x, y)
 
         # 1) Capture old panel HTML (empty on first run)
         try:
