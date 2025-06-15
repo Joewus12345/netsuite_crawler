@@ -224,6 +224,25 @@ def safe_get_attr(base, attr, retries=2, delay=0.1):
             time.sleep(delay)
     return ""
 
+def ensure_rect_visible(driver, rect):
+    # this scrollIntoView will handle the horizontal/diagram scrollbars
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center', inline:'center'})", rect
+    )
+    # now also nudge the y-files vertical scroll pane
+    # find the containing scrollable viewport:
+    pane = driver.find_element(
+        By.CSS_SELECTOR,
+        "#diagrammer > div.yfiles-scrollbar-vertical .yfiles-scrollbar-range-vertical"
+    )
+    # Figure out how far the rect is from the top of that pane...
+    y = driver.execute_script("""
+        let [r, p] = arguments;
+        let rb = r.getBoundingClientRect(), pb = p.getBoundingClientRect();
+        return (rb.top - pb.top) + p.scrollTop - (pb.height / 2);
+    """, rect, pane)
+    driver.execute_script("arguments[0].scrollTop = arguments[1];", pane, y)
+
 def build_state_label_map(driver):
     """
     Scans the #diagrammer SVG for every <rect> and its matching <g transform="translate(x y)">
@@ -243,7 +262,7 @@ def build_state_label_map(driver):
         if not tspans:
             continue
         # join multiline labels
-        text = "\n".join(t.text for t in tspans).strip()
+        text = " ".join(s.text.strip() for s in tspans if s.text.strip())
         # store under this key
         label_map[(x, y)] = text
     return label_map
@@ -313,52 +332,48 @@ def scrape_workflow_for_record(driver, record_name, results):
 
     # 4) Get the count of <rect> states
     rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
-    for state_index in range(len(rects)):
-        # always re-find & click
+    print(f"⚐ Found {len(rects)} states in document order")
+
+    for idx, rect in enumerate(rects, start=1):
+        # grab its coords and lookup the name
+        x = rect.get_attribute("x")
+        y = rect.get_attribute("y")
+        state_name = state_labels.get((x, y), "")
+        print(f"→ State #{idx} at ({x},{y}) = “{state_name}”")
+
+        # scroll it fully into view (even if it's in the overflow pane)
+        ensure_rect_visible(driver, rect)
+
+        # 1) Capture old panel HTML (empty on first run)
         try:
-            rect = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")[state_index]
-            x = rect.get_attribute("x")
-            y = rect.get_attribute("y")
-            # lookup the label (fall back to empty)
-            state_name = state_labels.get((x, y), "")
-            print(f"    → State #{state_index+1} at ({x},{y}) = “{state_name}”")
-            driver.execute_script("arguments[0].scrollIntoView(true);", rect)
-            ActionChains(driver).move_to_element(rect).click().perform()
-        except Exception:
-            print(f"⚠️ Couldn’t click state #{state_index+1}, skipping")
-            continue
+            old_html = driver.find_element(
+                By.CSS_SELECTOR, "#state-info-tab-actions"
+            ).get_attribute("innerHTML")
+        except NoSuchElementException:
+            old_html = ""
 
-        # switch to State panel & Actions sub-tab
-        try:
-            WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.ID, "panel-tab-switch-main"))
-            ).click()
-            WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.ID, "state-info-button-actions"))
-            ).click()
+        # 2) Click the state to open its panel
+        ActionChains(driver).move_to_element(rect).click().perform()
 
-            # wait for categories to render
-            WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "#state-info-tab-actions ul > li"))
-            )
-        except Exception:
-            print(f"⚠️ Couldn’t open Actions panel for state #{state_index+1}, skipping")
-            continue
-
-        # 5) Categories (Grab the number of categories)
-        WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, "#state-info-tab-actions"))
-        )
-
-        # retry grabbing the panel’s HTML up to 3 times in case it goes stale
-        panel_html = None
-        for _ in range(3):
+        # 3) Wait until the panel appears *and* its HTML differs from old_html
+        def panel_changed(drv):
             try:
-                panel = driver.find_element(By.CSS_SELECTOR, "#state-info-tab-actions")
-                panel_html = panel.get_attribute("innerHTML")
-                break
+                el = drv.find_element(By.CSS_SELECTOR, "#state-info-tab-actions")
+                if el.get_attribute("innerHTML") != old_html:
+                    return el
+                return False
             except StaleElementReferenceException:
-                time.sleep(0.2)
+                # panel is mid-update—keep waiting
+                return False
+
+        try:
+            panel = WebDriverWait(driver, 5).until(panel_changed)
+            panel_html = panel.get_attribute("innerHTML")
+        except TimeoutException:
+            print(f"⚠️ Panel didn’t update for state #{idx}, skipping")
+            # collapse back and move on
+            driver.find_element(By.ID, "panel-tab-switch-workflow").click()
+            continue
 
         if not panel_html:
             print(f"⚠️ Couldn’t stabilize Actions panel for '{record_name}', skipping state")
@@ -373,13 +388,13 @@ def scrape_workflow_for_record(driver, record_name, results):
         for cat_li in soup.select("ul > li"):
             cat_label = cat_li.select_one("span.category-row")
             category_name = cat_label.get_text(strip=True) if cat_label else "<unnamed>"
-            print(f"        • Category: {category_name}")
+            print(f"• Category: {category_name}")
 
             # Loop triggers
             for trig_li in cat_li.select(":scope > ul > li"):
                 trig_label = trig_li.select_one("span.trigger-row")
                 trigger_name = trig_label.get_text(strip=True) if trig_label else "<none>"
-                print(f"           ↳ Trigger: {trigger_name}")
+                print(f"↳ Trigger: {trigger_name}")
 
                 # Loop actions
                 for action_li in trig_li.select("ul > li.action-row"):
@@ -399,7 +414,7 @@ def scrape_workflow_for_record(driver, record_name, results):
                     # condition
                     cond = action_li.get("onmouseover", "")
 
-                    print(f"              ↪ Action: {name} | args={args}")
+                    print(f"↪ Action: {name} | args={args}")
                     results.append([
                         record_name,
                         workflow_name,

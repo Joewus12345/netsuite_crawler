@@ -14,6 +14,7 @@ if HEADLESS_MODE:
     options.add_argument("--disable-gpu")  # Necessary for headless on Windows
     options.add_argument("--window-size=1920,1080")  # Set browser size
 driver = webdriver.Chrome(options=options)
+driver.maximize_window()
 
 ## ── Parse an optional --records list ───────────────────────────────────────
 parser = argparse.ArgumentParser(
