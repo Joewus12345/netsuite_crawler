@@ -1,7 +1,7 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 import csv
@@ -224,6 +224,25 @@ def safe_get_attr(base, attr, retries=2, delay=0.1):
             time.sleep(delay)
     return ""
 
+def reset_scroll_to_top(driver, max_clicks=20, pause=0.1):
+    """
+    If NetSuite’s vertical scrollbar is already at the bottom, click ▲
+    until it reaches the very top (or until max_clicks).
+    """
+    try:
+        up = driver.find_element(By.CSS_SELECTOR, ".yfiles-button-up")
+    except NoSuchElementException:
+        # no scrollbar present
+        return
+
+    for _ in range(max_clicks):
+        try:
+            up.click()
+            time.sleep(pause)
+        except ElementNotInteractableException:
+            # arrow has gone inactive (we’re at the top)
+            break
+
 def ensure_rect_visible(driver, raw_x, raw_y, max_scrolls=15):
     """
     Scroll the diagram vertically (via NetSuite's ▲▼ buttons) until
@@ -335,6 +354,9 @@ def scrape_workflow_for_record(driver, record_name, results):
         ).click()
     except TimeoutException:
         pass
+
+    # NEW: make sure we start with the canvas scrolled *all the way* to its top
+    reset_scroll_to_top(driver)
 
     # 3) Wait for the SVG canvas to become visible — retry up to 3 times
     svg_loaded = False

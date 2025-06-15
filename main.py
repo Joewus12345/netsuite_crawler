@@ -31,7 +31,7 @@ args = parser.parse_args()
 login_netsuite(driver)
 
 # ── Decide which record‐types to scrape ────────────────────────────────────
-HARDCODED = ["Asset Item", "Asset Order", "Asset Disposal"]
+HARDCODED = []
 
 # Phase 1: Manually entered record types/HRA record types
 if args.records:
