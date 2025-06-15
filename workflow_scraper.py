@@ -292,15 +292,22 @@ def build_state_label_map(driver):
         m = re.match(r"translate\(\s*([\d.]+)\s+([\d.]+)\s*\)", tf)
         if not m:
             continue
+        # only consider g's that have a *direct* <text> child
+        text_els = g.find_elements(By.CSS_SELECTOR, ":scope > text")
+        if not text_els:
+            continue
+
         x, y = m.groups()
-        # look for any <tspan> under this g
-        tspans = g.find_elements(By.TAG_NAME, "tspan")
+        # now pull tspans only from that text element
+        tspans = text_els[0].find_elements(By.TAG_NAME, "tspan")
         if not tspans:
             continue
+
         # join multiline labels
         text = " ".join(s.text.strip() for s in tspans if s.text.strip())
         # store under this key
         label_map[(x, y)] = text
+
     return label_map
 
 # ── Phase 3: Workflow Detail & Actions Extraction ──────────────────────────
@@ -367,18 +374,23 @@ def scrape_workflow_for_record(driver, record_name, results):
     state_labels = build_state_label_map(driver)
 
     # 4) Get the count of <rect> states
-    rects = driver.find_elements(By.CSS_SELECTOR, "#diagrammer svg rect")
-    print(f"⚐ Found {len(rects)} states in document order")
+    # snapshot all coords
+    coords = list(state_labels.keys())
+    # sort by y then x, both numeric
+    coords.sort(key=lambda t: (float(t[1]), float(t[0])))
+    print(f"⚐ Found {len(coords)} total states")
 
-    for idx, rect in enumerate(rects, start=1):
+    for idx, (x, y) in enumerate(coords, start=1):
         # grab its coords and lookup the name
-        x = rect.get_attribute("x")
-        y = rect.get_attribute("y")
+        # x = rect.get_attribute("x")
+        # y = rect.get_attribute("y")
         state_name = state_labels.get((x, y), "")
         print(f"→ State #{idx} at ({x},{y}) = “{state_name}”")
 
         # scroll it fully into view (even if it's in the overflow pane)
         rect = ensure_rect_visible(driver, x, y)
+        if not rect:
+            continue
 
         # 1) Capture old panel HTML (empty on first run)
         try:
@@ -468,7 +480,7 @@ def scrape_workflow_for_record(driver, record_name, results):
             time.sleep(0.3)
         except:
             pass
-    print(f"✅ Finished scrape for '{record_name}' ({len(rects)} states) \n")
+    print(f"✅ Finished scrape for '{record_name}' ({len(coords)} states) \n")
 
     # 9) Finally go back to the workflow‐list for the next record
     navigate_to_workflow_list(driver)
