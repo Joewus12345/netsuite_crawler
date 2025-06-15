@@ -468,7 +468,7 @@ def scrape_workflow_for_record(driver, record_name, results):
             time.sleep(0.3)
         except:
             pass
-    print(f"✅ Finished scrape for '{record_name}'\n")
+    print(f"✅ Finished scrape for '{record_name}' ({len(rects)} states) \n")
 
     # 9) Finally go back to the workflow‐list for the next record
     navigate_to_workflow_list(driver)
