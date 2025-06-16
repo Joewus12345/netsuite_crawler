@@ -262,6 +262,41 @@ def reset_scroll_to_top(driver, max_clicks=30, pause=0.1, wait_timeout=5):
         """)
         # no need to wait longer
 
+def discover_all_states(driver, scroll_pause=0.3, max_rounds=50):
+    """
+    Scrolls the workflow canvas from top→bottom by bumping the scrollTop
+    of the vertical pane.  Each time we collect whatever labels are in view
+    and merge them into `seen`.  Returns the full map of (x,y)->label.
+    """
+    pane = driver.find_element(
+        By.CSS_SELECTOR,
+        "#diagrammer .yfiles-scrollbar-range-vertical"
+    )
+
+    seen = {}
+    for round in range(max_rounds):
+        # 1) collect whatever labels are in view right now
+        labels = build_state_label_map(driver)
+        new = {k: v for k, v in labels.items() if k not in seen}
+        if not new and seen:
+            # no new ones this round → we’ve reached the bottom
+            break
+        seen.update(new)
+
+        # 2) scroll down one “page”
+        driver.execute_script(
+            "arguments[0].scrollTop += arguments[0].clientHeight * 0.9;",
+            pane
+        )
+        time.sleep(scroll_pause)
+
+    # finally, scroll back to top so that your subsequent clicks start
+    # from the very top of the diagram
+    driver.execute_script("arguments[0].scrollTop = 0;", pane)
+    time.sleep(scroll_pause)
+
+    return seen
+
 def ensure_rect_visible(driver, raw_x, raw_y, max_scrolls=15):
     """
     Scroll the diagram vertically (via NetSuite's ▲▼ buttons) until
@@ -414,7 +449,7 @@ def scrape_workflow_for_record(driver, record_name, results):
         workflow_name = ""
 
     # Build the map once per workflow
-    state_labels = build_state_label_map(driver)
+    state_labels = discover_all_states(driver)
 
     # 4) Get the count of <rect> states
     # snapshot all coords
