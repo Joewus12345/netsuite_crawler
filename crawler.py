@@ -7,10 +7,16 @@ import time  # For delays
 from urllib.parse import urljoin  # Handle URLs
 import requests  # requests for HTTP requests
 from bs4 import BeautifulSoup  # Parses HTML to extract links
-from config import NETSUITE_URL, NETSUITE_EMAIL, NETSUITE_PASSWORD, SECURITY_ANSWER, ADMIN_ITEM_URL, HEADLESS_MODE  # Import credentials
+from config import (
+    NETSUITE_URL,
+    NETSUITE_EMAIL,
+    NETSUITE_PASSWORD,
+    SECURITY_ANSWER,
+    ADMIN_ITEM_URL,
+    HEADLESS_MODE,
+)  # Import credentials
 
 # ✅ Configure WebDriver (Allow headless mode)
-HEADLESS_MODE = HEADLESS_MODE # Set to True to run in headless mode
 
 # Set up WebDriver options
 # options = webdriver.ChromeOptions()

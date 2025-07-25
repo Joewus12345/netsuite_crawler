@@ -9,7 +9,6 @@ import workflow_scraper as ws
 import user_roles_scraper as urs
 
 # ✅ Configure WebDriver (Allow headless mode)
-HEADLESS_MODE = HEADLESS_MODE # Set to True to run in headless mode
 
 # Set up WebDriver options
 options = webdriver.ChromeOptions()
