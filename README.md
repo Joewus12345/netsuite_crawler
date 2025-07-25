@@ -41,11 +41,7 @@ venv\Scripts\activate     # On Windows
 ---
 
 ### 3️⃣ **Install Dependencies**
-
-```sh
-pip install -r requirements.txt
-```
-
+@@ -45,88 +49,94 @@ pip install -r requirements.txt
 ---
 
 ### 4️⃣ **Set Up** config.py
@@ -140,21 +136,3 @@ div[data-type='primary'][role='button']
 
 - Try logging in manually to ensure credentials are correct.
 - Check if NetSuite has CAPTCHA enabled (this bot does not bypass CAPTCHA).
-
----
-
-## ⭐ **Future Improvements**
-
-✅ Store extracted links in SQLite/MongoDB
-
-✅ Export data to CSV/JSON
-
-✅ Improve speed using async requests
-
-## 🏆 **Credits**
-
-Developed by **Owusu Joseph Gyimah** 💡
-
-Inspired by **NetSuite Automation & Other Crawlers**
-
-🔗 GitHub: [github.com/Joewus12345/netsuite_crawler](https://github.com/Joewus12345/netsuite_crawler)
