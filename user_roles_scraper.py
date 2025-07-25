@@ -177,6 +177,7 @@ def scrape_all_user_roles(driver):
                 break
 
             input_el = driver.find_element(By.ID, "segment")
+            page_label = pagination.get_attribute("data-pagination-text") or input_el.get_attribute("value")
             old_value = input_el.get_attribute("value") or ""
             parts = old_value.split(chr(2))
             try:
@@ -185,7 +186,6 @@ def scrape_all_user_roles(driver):
                 logger.error(f"Unexpected pagination value: {old_value!r}")
                 break
 
-            page_label = pagination.get_attribute("data-pagination-text")
             logger.info(f"➡️ Moving to next page… (currently {page_label})")
             first_row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr td:nth-child(3)").text
 
