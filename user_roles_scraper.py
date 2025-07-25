@@ -58,7 +58,89 @@ def switch_to_admin_role(driver):
     WebDriverWait(driver, 10).until(EC.url_contains("whence"))
     print("🔄 Switched to admin role.")
 
+
 def navigate_to_user_roles_list(driver):
     driver.get("https://4891605.app.netsuite.com/app/setup/rolelist.nl?whence=")
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "div__footer")))
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "div__footer"))
+    )
     print("✅ On User Roles List page.")
+
+
+def _parse_table_rows(table, num_cols):
+    rows = []
+    for tr in table.find_elements(By.CSS_SELECTOR, "tr.uir-machine-row"):
+        cells = [c.text.strip() for c in tr.find_elements(By.TAG_NAME, "td")[:num_cols]]
+        if len(cells) == num_cols:
+            rows.append(cells)
+    return rows
+
+
+def _scrape_permission_section(driver, tab_js, table_id, num_cols):
+    try:
+        driver.find_element(By.CSS_SELECTOR, f"a[href=\"javascript:void('{tab_js}')\"]").click()
+    except NoSuchElementException:
+        return []
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, table_id))
+    )
+    table = driver.find_element(By.ID, table_id)
+    return _parse_table_rows(table, num_cols)
+
+
+def scrape_permissions_for_role(driver, role_name, results):
+    sections = [
+        ("Transactions", "tranmach", "tranmach_splits", 2),
+        ("Setup", "setupmach", "setupmach_splits", 2),
+        ("Custom Record", "custrecordmach", "custrecordmach_splits", 3),
+    ]
+    for label, jsref, table_id, cols in sections:
+        rows = _scrape_permission_section(driver, jsref, table_id, cols)
+        for row in rows:
+            if cols == 2:
+                perm, level = row
+                results.append([role_name, label, perm, level, ""])
+            else:
+                record, level, restrict = row
+                results.append([role_name, label, record, level, restrict])
+
+
+def scrape_all_user_roles(driver):
+    results = []
+    while True:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
+        )
+        rows = driver.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")
+        for row in rows:
+            try:
+                link = row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a")
+            except NoSuchElementException:
+                continue
+            role_name = link.text.strip()
+            driver.execute_script("arguments[0].click();", link)
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "PERM_TABlnk"))
+            )
+            scrape_permissions_for_role(driver, role_name, results)
+            driver.back()
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "div__footer"))
+            )
+        try:
+            next_btn = driver.find_element(By.CSS_SELECTOR, "button.navig-next")
+            if "disabled" in next_btn.get_attribute("class"):
+                break
+            next_btn.click()
+            WebDriverWait(driver, 10).until(EC.staleness_of(rows[0]))
+        except Exception:
+            break
+    return results
+
+
+def save_permissions(results, filename="user_role_permissions.csv"):
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Role", "Section", "Permission/Record", "Level", "Restrict"])
+        writer.writerows(results)
+    print(f"📂 Saved user role permissions to {filename}")
