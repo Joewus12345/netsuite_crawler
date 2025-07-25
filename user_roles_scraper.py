@@ -167,14 +167,19 @@ def scrape_all_user_roles(driver):
             if "disabled" in next_btn.get_attribute("class"):
                 logger.info("ℹ️ Reached final page of roles")
                 break
-            logger.info("➡️ Moving to next page…")
-            old_first_text = rows[0].text if rows else ""
-            driver.execute_script("arguments[0].click();", next_btn)
+            page_label = pagination.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text
+            logger.info(f"➡️ Moving to next page… (currently {page_label})")
+            old_label = page_label
+            try:
+                next_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", next_btn)
             WebDriverWait(driver, 10).until(
-                lambda d: d.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")[0].text != old_first_text
+                lambda d: d.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text != old_label
             )
             page += 1
-            logger.info(f"✅ Now on roles page {page}")
+            new_label = driver.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text
+            logger.info(f"✅ Now on roles page {page} ({new_label})")
         except Exception as e:
             logger.error(f"⚠️ Failed to navigate to next page: {e}")
             break
