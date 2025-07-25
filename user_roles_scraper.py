@@ -72,7 +72,7 @@ def navigate_to_user_roles_list(driver):
 
 def _parse_table_rows(table, num_cols):
     """Return a list of the first ``num_cols`` text values from each table row."""
-
+    
     rows = []
     for tr in table.find_elements(By.CSS_SELECTOR, "tr.uir-machine-row"):
         cells = [c.text.strip() for c in tr.find_elements(By.TAG_NAME, "td")[:num_cols]]
