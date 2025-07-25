@@ -86,23 +86,22 @@ def _parse_table_rows(table, num_cols):
     return rows
 
 
-def _scrape_permission_section(driver, tab_js, table_id, num_cols):
+def _scrape_permission_section(driver, tab_id, table_id, num_cols):
     """Click a permission subtab and parse its table rows."""
 
     try:
-        driver.find_element(
-            By.CSS_SELECTOR, f"a[href=\"javascript:void('{tab_js}')\"]"
-        ).click()
-        logger.info(f"      ▶️ {tab_js} tab opened")
+        subtab = driver.find_element(By.ID, f"{tab_id}txt")
+        driver.execute_script("arguments[0].click();", subtab)
+        logger.info(f"      ▶️ {tab_id} tab opened")
     except NoSuchElementException:
-        logger.warning(f"      ⚠️ {tab_js} tab not found")
+        logger.warning(f"      ⚠️ {tab_id} tab not found")
         return []
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.ID, table_id))
     )
     table = driver.find_element(By.ID, table_id)
     rows = _parse_table_rows(table, num_cols)
-    logger.info(f"      ✔️ scraped {len(rows)} rows from {tab_js}")
+    logger.info(f"      ✔️ scraped {len(rows)} rows from {tab_id}")
     return rows
 
 
@@ -115,9 +114,9 @@ def scrape_permissions_for_role(driver, role_name, results):
         ("Setup", "setupmach", "setupmach_splits", 2),
         ("Custom Record", "custrecordmach", "custrecordmach_splits", 3),
     ]
-    for label, jsref, table_id, cols in sections:
+    for label, tab_id, table_id, cols in sections:
         logger.info(f"    ➡️ {label} subtab")
-        rows = _scrape_permission_section(driver, jsref, table_id, cols)
+        rows = _scrape_permission_section(driver, tab_id, table_id, cols)
         for row in rows:
             if cols == 2:
                 perm, level = row
@@ -169,9 +168,13 @@ def scrape_all_user_roles(driver):
                 logger.info("ℹ️ Reached final page of roles")
                 break
             logger.info("➡️ Moving to next page…")
-            driver.execute_script("NS.UI.Helpers.PaginationSelect.nextPage(arguments[0]);", next_btn)
-            WebDriverWait(driver, 10).until(EC.staleness_of(rows[0]))
+            old_first_text = rows[0].text if rows else ""
+            driver.execute_script("arguments[0].click();", next_btn)
+            WebDriverWait(driver, 10).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")[0].text != old_first_text
+            )
             page += 1
+            logger.info(f"✅ Now on roles page {page}")
         except Exception as e:
             logger.error(f"⚠️ Failed to navigate to next page: {e}")
             break
