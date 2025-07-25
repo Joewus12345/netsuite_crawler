@@ -1,3 +1,4 @@
 config.py
 workflow_actions.csv
 *.csv
+venv/
