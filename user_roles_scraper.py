@@ -167,18 +167,30 @@ def scrape_all_user_roles(driver):
             if "disabled" in next_btn.get_attribute("class"):
                 logger.info("ℹ️ Reached final page of roles")
                 break
-            page_label = pagination.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text
+
+            input_el = driver.find_element(By.ID, "segment")
+            old_value = input_el.get_attribute("value")
+            current_index = int(old_value.split("\u0002")[0])
+
+            page_label = pagination.get_attribute("data-pagination-text")
             logger.info(f"➡️ Moving to next page… (currently {page_label})")
-            old_label = page_label
-            try:
-                next_btn.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", next_btn)
+            first_row = driver.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr td:nth-child(3)").text
+
+            next_index = current_index + 1
+            driver.execute_script(
+                "NS.UI.Helpers.PaginationSelect.goToPage(arguments[0], arguments[1]);",
+                pagination,
+                next_index,
+            )
+
             WebDriverWait(driver, 10).until(
-                lambda d: d.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text != old_label
+                lambda d: input_el.get_attribute("value") != old_value
+            )
+            WebDriverWait(driver, 10).until(
+                lambda d: d.find_element(By.CSS_SELECTOR, "tr.uir-list-row-tr td:nth-child(3)").text != first_row
             )
             page += 1
-            new_label = driver.find_element(By.CSS_SELECTOR, "span.uir-pagination-label").text
+            new_label = pagination.get_attribute("data-pagination-text")
             logger.info(f"✅ Now on roles page {page} ({new_label})")
         except Exception as e:
             logger.error(f"⚠️ Failed to navigate to next page: {e}")
