@@ -10,11 +10,11 @@ This project is a **Python-based web crawler** that **logs into NetSuite**, navi
 ✅ **Handles 2FA** (Console Input in Headless Mode)  
 ✅ **Answers Security Questions Automatically**  
 ✅ **Crawls NetSuite Pages** & Extracts Links  
-✅ **Supports Headless Mode for Automation**
-✅ **Navigates Directly to Custom Records**
-✅ **Scrapes User Role Permissions** across Transactions, Reports, Lists, Setup and Custom Record sections
-✅ **Extracts Workflow Actions** for any record type
-✅ **Exports Scraped Data to CSV**
+✅ **Supports Headless Mode for Automation**  
+✅ **Navigates Directly to Custom Records**  
+✅ **Scrapes User Role Permissions** across Transactions, Reports, Lists, Setup and Custom Record sections  
+✅ **Extracts Workflow Actions** for any record type  
+✅ **Exports Scraped Data to CSV**  
 ✅ **Handles Multi‐Page Role Lists with Pagination**
 
 ---
