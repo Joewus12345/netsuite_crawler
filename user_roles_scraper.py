@@ -1,18 +1,19 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import NoSuchElementException
 import time
 import csv
-import json
-import re
-from bs4 import BeautifulSoup
-from config import SECURITY_ANSWER, HEADLESS_MODE
+from config import HEADLESS_MODE
 
 # ── Phase 1: User Roles Navigation & Scrape ─────────────────────────────
 def switch_to_admin_role(driver):
-    url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~19522~1073~N"
+    """Switch the current session to an administrator role, handling 2FA if
+    necessary."""
+
+    url = (
+        "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~19522~1073~N"
+    )
     driver.get(url)
     
     # ✅ Handle 2FA Authentication
@@ -60,6 +61,8 @@ def switch_to_admin_role(driver):
 
 
 def navigate_to_user_roles_list(driver):
+    """Navigate directly to the NetSuite page that lists all user roles."""
+
     driver.get("https://4891605.app.netsuite.com/app/setup/rolelist.nl?whence=")
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.ID, "div__footer"))
@@ -68,6 +71,8 @@ def navigate_to_user_roles_list(driver):
 
 
 def _parse_table_rows(table, num_cols):
+    """Return a list of the first ``num_cols`` text values from each table row."""
+    
     rows = []
     for tr in table.find_elements(By.CSS_SELECTOR, "tr.uir-machine-row"):
         cells = [c.text.strip() for c in tr.find_elements(By.TAG_NAME, "td")[:num_cols]]
@@ -77,8 +82,12 @@ def _parse_table_rows(table, num_cols):
 
 
 def _scrape_permission_section(driver, tab_js, table_id, num_cols):
+    """Click a permission subtab and parse its table rows."""
+
     try:
-        driver.find_element(By.CSS_SELECTOR, f"a[href=\"javascript:void('{tab_js}')\"]").click()
+        driver.find_element(
+            By.CSS_SELECTOR, f"a[href=\"javascript:void('{tab_js}')\"]"
+        ).click()
     except NoSuchElementException:
         return []
     WebDriverWait(driver, 10).until(
@@ -89,6 +98,8 @@ def _scrape_permission_section(driver, tab_js, table_id, num_cols):
 
 
 def scrape_permissions_for_role(driver, role_name, results):
+    """Scrape permission tables for a single role and append to ``results``."""
+
     sections = [
         ("Transactions", "tranmach", "tranmach_splits", 2),
         ("Setup", "setupmach", "setupmach_splits", 2),
@@ -106,6 +117,8 @@ def scrape_permissions_for_role(driver, role_name, results):
 
 
 def scrape_all_user_roles(driver):
+    """Iterate through all pages of roles and collect permission data."""
+
     results = []
     while True:
         WebDriverWait(driver, 10).until(
@@ -139,6 +152,8 @@ def scrape_all_user_roles(driver):
 
 
 def save_permissions(results, filename="user_role_permissions.csv"):
+    """Write permission rows to ``filename`` in CSV format."""
+
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Role", "Section", "Permission/Record", "Level", "Restrict"])
