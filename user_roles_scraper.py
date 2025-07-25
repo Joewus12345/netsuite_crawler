@@ -5,6 +5,7 @@ from selenium.common.exceptions import NoSuchElementException
 import time
 import csv
 import logging
+import re
 from config import HEADLESS_MODE
 
 logger = logging.getLogger(__name__)
@@ -169,8 +170,13 @@ def scrape_all_user_roles(driver):
                 break
 
             input_el = driver.find_element(By.ID, "segment")
-            old_value = input_el.get_attribute("value")
-            current_index = int(old_value.split("\u0002")[0])
+            old_value = input_el.get_attribute("value") or ""
+            parts = old_value.split(chr(2))
+            try:
+                current_index = int(parts[0]) if parts and parts[0].isdigit() else 0
+            except Exception:
+                logger.error(f"Unexpected pagination value: {old_value!r}")
+                break
 
             page_label = pagination.get_attribute("data-pagination-text")
             logger.info(f"➡️ Moving to next page… (currently {page_label})")
