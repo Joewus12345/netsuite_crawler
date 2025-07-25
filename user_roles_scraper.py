@@ -72,7 +72,7 @@ def navigate_to_user_roles_list(driver):
 
 def _parse_table_rows(table, num_cols):
     """Return a list of the first ``num_cols`` text values from each table row."""
-    
+
     rows = []
     for tr in table.find_elements(By.CSS_SELECTOR, "tr.uir-machine-row"):
         cells = [c.text.strip() for c in tr.find_elements(By.TAG_NAME, "td")[:num_cols]]
@@ -125,7 +125,9 @@ def scrape_all_user_roles(driver):
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
         )
         rows = driver.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")
-        for row in rows:
+        for i in range(len(rows)):
+            # Re-fetch the row each time to avoid stale element references after navigation
+            row = driver.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")[i]
             try:
                 link = row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a")
             except NoSuchElementException:
