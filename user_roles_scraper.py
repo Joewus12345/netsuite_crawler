@@ -112,6 +112,8 @@ def scrape_permissions_for_role(driver, role_name, results):
     logger.info(f"  🔍 Scraping permissions for role: {role_name}")
     sections = [
         ("Transactions", "tranmach", "tranmach_splits", 2),
+        ("Reports", "repomach", "repomach_splits", 2),
+        ("Lists", "listsmach", "listsmach_splits", 2),
         ("Setup", "setupmach", "setupmach_splits", 2),
         ("Custom Record", "custrecordmach", "custrecordmach_splits", 3),
     ]

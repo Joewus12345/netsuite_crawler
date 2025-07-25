@@ -10,8 +10,12 @@ This project is a **Python-based web crawler** that **logs into NetSuite**, navi
 ✅ **Handles 2FA** (Console Input in Headless Mode)  
 ✅ **Answers Security Questions Automatically**  
 ✅ **Crawls NetSuite Pages** & Extracts Links  
-✅ **Supports Headless Mode for Automation**  
+✅ **Supports Headless Mode for Automation**
 ✅ **Navigates Directly to Custom Records**
+✅ **Scrapes User Role Permissions** across Transactions, Reports, Lists, Setup and Custom Record sections
+✅ **Extracts Workflow Actions** for any record type
+✅ **Exports Scraped Data to CSV**
+✅ **Handles Multi‐Page Role Lists with Pagination**
 
 ---
 
@@ -67,11 +71,13 @@ HEADLESS_MODE = False  # Change to True to run without opening a browser
 ```sh
 python main.py
 ```
+Running the script logs in and **scrapes permissions for all user roles**. The
+results are saved to `user_role_permissions.csv` in the project directory.
 
 #### **NB: This only applies to user accounts with Administrative Privileges**
 
 - You manually enter the 2FA code in the browser when prompted.
-- The bot navigates to 'Admin Item' and waits for manual closure.
+- The bot automatically iterates through the role list and exports the CSV.
 
 ---
 
@@ -88,11 +94,13 @@ Then run:
 ```sh
 python main.py
 ```
+The process is the same as normal mode, but the browser window stays hidden. The
+script prompts you for the 2FA code in the console and then scrapes all role
+permissions automatically.
 
 #### **NB: This only applies to user accounts with Administrative Privileges**
 
-- The bot asks for the 2FA code in the console.
-- You type the 6-digit code, and the bot submits it automatically.
+- Provide the 2FA code when prompted in the terminal.
 
 ---
 
@@ -105,6 +113,8 @@ python main.py
  ┣ 📜 config.py           # Stores credentials & config
  ┣ 📜 main.py             # Entry point for the bot
  ┣ 📜 crawler.py          # Core logic for logging in & crawling
+ ┣ 📜 user_roles_scraper.py   # Scrapes role permissions
+ ┣ 📜 workflow_scraper.py     # Scrapes workflow actions
  ┣ 📜 requirements.txt    # Dependencies list
  ┣ 📜 README.md           # Project documentation (You are here!)
 ```
