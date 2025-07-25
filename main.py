@@ -3,6 +3,7 @@ from selenium import webdriver
 from crawler import login_netsuite
 from config import HEADLESS_MODE
 import workflow_scraper as ws
+import user_roles_scraper as urs
 
 # ✅ Configure WebDriver (Allow headless mode)
 HEADLESS_MODE = HEADLESS_MODE # Set to True to run in headless mode
@@ -34,45 +35,45 @@ login_netsuite(driver)
 HARDCODED = []
 
 # Phase 1: Manually entered record types/HRA record types
-if args.records:
-    # 1) command‐line
-    try:
-        records = json.loads(args.records)
-        print(f"📝 Using command-line list: {records}")
-    except json.JSONDecodeError:
-        print("❌ Could not parse --records as JSON. Expecting a JSON array of strings.")
-        driver.quit()
-        sys.exit(1)
+# if args.records:
+#     # 1) command‐line
+#     try:
+#         records = json.loads(args.records)
+#         print(f"📝 Using command-line list: {records}")
+#     except json.JSONDecodeError:
+#         print("❌ Could not parse --records as JSON. Expecting a JSON array of strings.")
+#         driver.quit()
+#         sys.exit(1)
 
-elif HARDCODED:
-    # 2) hard-coded
-    records = HARDCODED
-    print(f"📝 Using hard-coded list: {records}")
+# elif HARDCODED:
+#     # 2) hard-coded
+#     records = HARDCODED
+#     print(f"📝 Using hard-coded list: {records}")
 
-else:
-    # 3) dynamic extraction
-    print("📝 No manual list provided; extracting record types from NetSuite…")
-    ws.switch_to_hra_role(driver)
-    records = ws.extract_hra_record_types(driver)
-    print(f"📝 Dynamically extracted: {records}")
+# else:
+#     # 3) dynamic extraction
+#     print("📝 No manual list provided; extracting record types from NetSuite…")
+#     ws.switch_to_hra_role(driver)
+#     records = ws.extract_hra_record_types(driver)
+#     print(f"📝 Dynamically extracted: {records}")
 
-# Phase 2: Workflow list & filtering
-ws.switch_to_admin_role(driver)
-ws.navigate_to_workflow_list(driver)
+# Phase 1: User roles list & scrape
+urs.switch_to_admin_role(driver)
+urs.navigate_to_user_roles_list(driver)
 
 # Phase 3: Scrape workflows
-all_actions = []
-for rec in records:
-    # always get back to the list first
-    ws.navigate_to_workflow_list(driver)
-    if ws.filter_by_record_type(driver, rec):
-        ws.scrape_workflow_for_record(driver, rec, all_actions)
-    else:
-        print(f"➡️ Skipping {rec}")
+# all_actions = []
+# for rec in records:
+#     # always get back to the list first
+#     ws.navigate_to_workflow_list(driver)
+#     if ws.filter_by_record_type(driver, rec):
+#         ws.scrape_workflow_for_record(driver, rec, all_actions)
+#     else:
+#         print(f"➡️ Skipping {rec}")
 
-ws.save_actions(all_actions)
+# ws.save_actions(all_actions)
 
-driver.quit()
+# driver.quit()
 
 # bash
 # python main.py --records '["Admin Request","Feedback","Local Flight Request"]'
