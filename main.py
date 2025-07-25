@@ -1,7 +1,10 @@
 import argparse, json, sys
+import logging
 from selenium import webdriver
 from crawler import login_netsuite
 from config import HEADLESS_MODE
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 import workflow_scraper as ws
 import user_roles_scraper as urs
 
