@@ -136,8 +136,12 @@ def scrape_all_user_roles(driver):
     while True:
         logger.info(f"🔄 Processing roles page {page}")
         WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "div__footer"))
+        )
+        WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
         )
+        main_window = driver.current_window_handle
         rows = driver.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")
         for i in range(len(rows)):
             # Re-fetch the row each time to avoid stale element references after navigation
@@ -148,12 +152,15 @@ def scrape_all_user_roles(driver):
                 continue
             role_name = link.text.strip()
             logger.info(f"➡️ Opening role: {role_name}")
-            driver.execute_script("arguments[0].click();", link)
+            link_url = link.get_attribute("href")
+            driver.execute_script("window.open(arguments[0]);", link_url)
+            driver.switch_to.window(driver.window_handles[-1])
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "PERM_TABlnk"))
             )
             scrape_permissions_for_role(driver, role_name, results)
-            driver.back()
+            driver.close()
+            driver.switch_to.window(main_window)
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "div__footer"))
             )
