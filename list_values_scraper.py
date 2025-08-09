@@ -65,7 +65,7 @@ def switch_to_admin_role(driver):
     logger.info("🔄 Switched to admin role.")
 
 
-def navigate_to_user_roles_list(driver):
+def navigate_to_list_values_table(driver):
     """Navigate directly to the NetSuite page that lists all list values."""
 
     logger.info("➡️ Navigating to List Values table…")

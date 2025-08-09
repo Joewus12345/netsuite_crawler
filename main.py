@@ -61,10 +61,10 @@ HARDCODED = []
 #     print(f"📝 Dynamically extracted: {records}")
 
 # Phase 1: User roles list & scrape
-urs.switch_to_admin_role(driver)
-urs.navigate_to_user_roles_list(driver)
-results = urs.scrape_all_user_roles(driver)
-urs.save_permissions(results)
+lvs.switch_to_admin_role(driver)
+lvs.navigate_to_list_values_table(driver)
+# results = urs.scrape_all_user_roles(driver)
+# urs.save_permissions(results)
 
 # Phase 3: Scrape workflows
 # all_actions = []
