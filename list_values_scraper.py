@@ -63,3 +63,14 @@ def switch_to_admin_role(driver):
             
     WebDriverWait(driver, 10).until(EC.url_contains("whence"))
     logger.info("🔄 Switched to admin role.")
+
+
+def navigate_to_user_roles_list(driver):
+    """Navigate directly to the NetSuite page that lists all list values."""
+
+    logger.info("➡️ Navigating to List Values table…")
+    driver.get("https://4891605.app.netsuite.com/app/common/custom/custlists.nl?whence=")
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "div__footer"))
+    )
+    logger.info("✅ On List Values Table page.")

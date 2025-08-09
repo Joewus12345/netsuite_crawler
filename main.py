@@ -7,6 +7,7 @@ from config import HEADLESS_MODE
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 import workflow_scraper as ws
 import user_roles_scraper as urs
+import list_values_scraper as lvs
 
 # ✅ Configure WebDriver (Allow headless mode)
 
