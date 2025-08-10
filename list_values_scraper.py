@@ -6,63 +6,21 @@ import time
 import csv
 import logging
 import re
-from config import HEADLESS_MODE
+from auth_utils import switch_to_admin_role as _switch_to_admin_role
 
 logger = logging.getLogger(__name__)
 
 # ── Phase 1: List Values Navigation & Scrape ─────────────────────────────
+ADMIN_ROLE_URL = (
+    "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~19522~1073~N"
+)
+
+
 def switch_to_admin_role(driver):
     """Switch the current session to an administrator role, handling 2FA if
     necessary."""
 
-    url = (
-        "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~19522~1073~N"
-    )
-    logger.info("➡️ Switching to admin role…")
-    driver.get(url)
-    
-    # ✅ Handle 2FA Authentication
-    if "loginchallenge/entry.nl" in driver.current_url:
-        print("🔐 2FA Authentication Required!")
-
-        if HEADLESS_MODE:
-            # Headless Mode → Enter 2FA Code in Console
-            two_fa_code = input("🔢 Enter 2FA Code: ")  # Prompt user for 6-digit code
-
-            try:
-                # Wait for the 2FA input field
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.ID, "uif56_input"))
-                )
-
-                # Enter the 2FA code from the console
-                two_fa_input = driver.find_element(By.ID, "uif56_input")
-                two_fa_input.send_keys(two_fa_code)
-                print("✅ 2FA Code Entered.")
-
-                # Wait for the submit button
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-type='primary'][role='button']"))
-                )
-
-                # Click submit using JavaScript (since it's inside a <div>)
-                submit_button = driver.find_element(By.CSS_SELECTOR, "div[data-type='primary'][role='button']")
-                driver.execute_script("arguments[0].click();", submit_button)
-                logger.info("✅ 2FA Code Submitted.")
-
-                time.sleep(5)  # Wait for redirection
-            except Exception as e:
-                logger.error(f"⚠️ Error entering 2FA code: {e}")
-                driver.quit()
-                return
-
-        else:
-            # Non-Headless Mode → User enters 2FA manually
-            logger.info("⏳ Waiting for manual 2FA entry in the browser…")
-            time.sleep(30)  # Give user 30 seconds to enter the code manually
-            
-    WebDriverWait(driver, 10).until(EC.url_contains("whence"))
-    logger.info("🔄 Switched to admin role.")
+    _switch_to_admin_role(driver, ADMIN_ROLE_URL)
 
 
 def navigate_to_list_values_table(driver):
