@@ -61,14 +61,19 @@ def scrape_list_values(driver):
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "customvalue_splits"))
         )
-        values = [
-            cell.text.strip()
-            for cell in driver.find_elements(
-                By.CSS_SELECTOR,
-                "#customvalue_splits tr.uir-list-row-tr td:first-child",
-            )
-            if cell.text.strip()
-        ]
+        rows = driver.find_elements(
+            By.CSS_SELECTOR, '#customvalue_splits tr[id^="customvalue_row_"]'
+        )
+        values = []
+        for row in rows:
+            try:
+                value = row.find_element(
+                    By.CSS_SELECTOR, 'td:nth-child(2)'
+                ).text.strip()
+                if value:
+                    values.append(value)
+            except NoSuchElementException:
+                continue
         results[name] = values
 
     logger.info("✅ Finished scraping list values.")
