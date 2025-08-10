@@ -44,9 +44,9 @@ def scrape_list_values(driver):
     links = []
     for row in rows:
         try:
-            name = row.find_element(By.CSS_SELECTOR, 'td[data-label="Name"]').text.strip()
-            last_td = row.find_elements(By.CSS_SELECTOR, "td")[-1]
-            href = last_td.find_element(By.TAG_NAME, "a").get_attribute("href")
+            link = row.find_element(By.CSS_SELECTOR, "td:first-child a")
+            name = link.text.strip()
+            href = link.get_attribute("href")
             links.append((name, href))
         except NoSuchElementException:
             continue
@@ -59,7 +59,7 @@ def scrape_list_values(driver):
         values = [
             cell.text.strip()
             for cell in driver.find_elements(
-                By.CSS_SELECTOR, 'tr.uir-list-row-tr td[data-label="Name"]'
+                By.CSS_SELECTOR, "tr.uir-list-row-tr td:first-child"
             )
             if cell.text.strip()
         ]
