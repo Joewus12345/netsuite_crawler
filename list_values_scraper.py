@@ -115,3 +115,12 @@ def save_list_values(data, filename="list_values.csv"):
                 writer.writerow([list_name, value])
 
     logger.info(f"💾 Saved list values to {filename}")
+
+
+def run(driver):
+    """Run the list-values scraper end to end."""
+
+    switch_to_admin_role(driver)
+    navigate_to_list_values_table(driver)
+    data = scrape_list_values(driver)
+    save_list_values(data)

@@ -569,3 +569,32 @@ def save_actions(results, filename="workflow_actions.csv"):
         writer.writerow(["Record Type","Workflow","State","Category","Trigger","Action","Arguments","Condition"])
         writer.writerows(results)
     print(f"📂 Saved actions to {filename}")
+
+
+def run(driver, records=None):
+    """Orchestrate the workflow scraping process.
+
+    Parameters
+    ----------
+    driver: selenium.webdriver
+        Active WebDriver instance, already logged into NetSuite.
+    records: list[str] | None
+        Optional list of record type names.  When omitted, the list is
+        extracted dynamically from the HRA role.
+    """
+
+    if records is None:
+        switch_to_hra_role(driver)
+        records = extract_hra_record_types(driver)
+
+    switch_to_admin_role(driver)
+
+    all_actions = []
+    for rec in records:
+        navigate_to_workflow_list(driver)
+        if filter_by_record_type(driver, rec):
+            scrape_workflow_for_record(driver, rec, all_actions)
+        else:
+            print(f"➡️ Skipping {rec}")
+
+    save_actions(all_actions)

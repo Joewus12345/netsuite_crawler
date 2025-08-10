@@ -167,5 +167,14 @@ def crawl_netsuite(driver):
     print("\n✅ Crawling complete!")
     print(f"Total Links Found: {len(visited)}")
     print("\n".join(visited))
+    return visited
 
-    driver.quit()  # ✅ Close browser after crawling is finished
+
+def run(driver):
+    """Run the standalone site crawler.
+
+    Assumes ``driver`` is already logged into NetSuite.  Returns the set of
+    visited links for further processing if needed.
+    """
+
+    return crawl_netsuite(driver)
