@@ -40,7 +40,7 @@ def switch_to_admin_role(driver):
                 two_fa_input.send_keys(two_fa_code)
                 print("✅ 2FA Code Entered.")
 
-                    # Wait for the submit button
+                # Wait for the submit button
                 WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-type='primary'][role='button']"))
                 )
@@ -52,9 +52,9 @@ def switch_to_admin_role(driver):
 
                 time.sleep(5)  # Wait for redirection
             except Exception as e:
-                    logger.error(f"⚠️ Error entering 2FA code: {e}")
-                    driver.quit()
-                    return
+                logger.error(f"⚠️ Error entering 2FA code: {e}")
+                driver.quit()
+                return
 
         else:
             # Non-Headless Mode → User enters 2FA manually
