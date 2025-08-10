@@ -74,3 +74,51 @@ def navigate_to_list_values_table(driver):
         EC.presence_of_element_located((By.ID, "div__footer"))
     )
     logger.info("✅ On List Values Table page.")
+
+
+def scrape_list_values(driver):
+    """Collect list values for each list on the table."""
+
+    logger.info("🔎 Scraping list values…")
+    results = {}
+
+    rows = driver.find_elements(By.CSS_SELECTOR, "tr.uir-list-row-tr")
+    links = []
+    for row in rows:
+        try:
+            name = row.find_element(By.CSS_SELECTOR, 'td[data-label="Name"]').text.strip()
+            last_td = row.find_elements(By.CSS_SELECTOR, "td")[-1]
+            href = last_td.find_element(By.TAG_NAME, "a").get_attribute("href")
+            links.append((name, href))
+        except NoSuchElementException:
+            continue
+
+    for name, href in links:
+        driver.get(href)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
+        )
+        values = [
+            cell.text.strip()
+            for cell in driver.find_elements(
+                By.CSS_SELECTOR, 'tr.uir-list-row-tr td[data-label="Name"]'
+            )
+            if cell.text.strip()
+        ]
+        results[name] = values
+
+    logger.info("✅ Finished scraping list values.")
+    return results
+
+
+def save_list_values(data, filename="list_values.csv"):
+    """Write scraped list values to a CSV file."""
+
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["list_name", "value"])
+        for list_name, values in data.items():
+            for value in values:
+                writer.writerow([list_name, value])
+
+    logger.info(f"💾 Saved list values to {filename}")

@@ -63,6 +63,9 @@ HARDCODED = []
 # Phase 1: User roles list & scrape
 lvs.switch_to_admin_role(driver)
 lvs.navigate_to_list_values_table(driver)
+# Scrape and save list values
+list_values = lvs.scrape_list_values(driver)
+lvs.save_list_values(list_values)
 # results = urs.scrape_all_user_roles(driver)
 # urs.save_permissions(results)
 
