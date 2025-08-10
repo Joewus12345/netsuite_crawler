@@ -41,7 +41,11 @@ venv\Scripts\activate     # On Windows
 ---
 
 ### 3️⃣ **Install Dependencies**
-@@ -45,88 +49,94 @@ pip install -r requirements.txt
+
+```sh
+pip install -r requirements.txt
+```
+
 ---
 
 ### 4️⃣ **Set Up** config.py
