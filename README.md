@@ -148,6 +148,18 @@ the terminal for the 2FA code.
 
 ---
 
+## 🧪 Testing
+
+Run the test suite with:
+
+```bash
+python -m pytest
+```
+
+The tests mock browser interactions and require no live NetSuite credentials.
+
+---
+
 ## 🛠️ Troubleshooting
 
 ### 1️⃣ **WebDriver Issues?**
