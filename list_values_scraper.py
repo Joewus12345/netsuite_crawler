@@ -85,7 +85,7 @@ def save_list_values(data, filename="list_values.csv"):
 
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["list_name", "value"])
+        writer.writerow(["Custom List", "Values"])
         for list_name, values in data.items():
             for value in values:
                 writer.writerow([list_name, value])
