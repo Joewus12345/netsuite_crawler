@@ -179,3 +179,12 @@ def save_permissions(results, filename="user_role_permissions.csv"):
         writer.writerow(["Role", "Section", "Permission/Record", "Level", "Restrict"])
         writer.writerows(results)
     logger.info(f"📂 Saved user role permissions to {filename}")
+
+
+def run(driver):
+    """Run the complete user-role scraping workflow."""
+
+    switch_to_admin_role(driver)
+    navigate_to_user_roles_list(driver)
+    results = scrape_all_user_roles(driver)
+    save_permissions(results)
