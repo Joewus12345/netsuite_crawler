@@ -2,17 +2,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
-import time
 import csv
 import logging
-import re
 from auth_utils import switch_to_admin_role as _switch_to_admin_role
 
 logger = logging.getLogger(__name__)
 
 # ── Phase 1: List Values Navigation & Scrape ─────────────────────────────
 ADMIN_ROLE_URL = (
-    "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~19522~1073~N"
+    "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?"
+    "id=4891605~19522~1073~N"
 )
 
 
@@ -27,11 +26,41 @@ def navigate_to_list_values_table(driver):
     """Navigate directly to the NetSuite page that lists all list values."""
 
     logger.info("➡️ Navigating to List Values table…")
-    driver.get("https://4891605.app.netsuite.com/app/common/custom/custlists.nl?whence=")
+    driver.get(
+        "https://4891605.app.netsuite.com/app/common/custom/custlists.nl?"
+        "whence="
+    )
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.ID, "div__footer"))
     )
     logger.info("✅ On List Values Table page.")
+
+
+def _extract_value_from_row(row):
+    """Return the text for a value cell within a list row.
+
+    Tries attribute-based selectors first and falls back to the second column
+    when those are unavailable.
+    """
+
+    # Prefer explicit column identification when available
+    selectors = [
+        'td[data-ns-tooltip="Value"]',
+        'td[data-label="Value"]',
+    ]
+
+    for selector in selectors:
+        cells = row.find_elements(By.CSS_SELECTOR, selector)
+        if cells:
+            return cells[0].text.strip()
+
+    # Fallback: first non-grippy cell
+    try:
+        return row.find_element(
+            By.CSS_SELECTOR, "td:nth-child(2)"
+        ).text.strip()
+    except NoSuchElementException:
+        return ""
 
 
 def scrape_list_values(driver):
@@ -66,14 +95,9 @@ def scrape_list_values(driver):
         )
         values = []
         for row in rows:
-            try:
-                value = row.find_element(
-                    By.CSS_SELECTOR, 'td:nth-child(2)'
-                ).text.strip()
-                if value:
-                    values.append(value)
-            except NoSuchElementException:
-                continue
+            value = _extract_value_from_row(row)
+            if value:
+                values.append(value)
         results[name] = values
 
     logger.info("✅ Finished scraping list values.")
