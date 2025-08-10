@@ -62,20 +62,29 @@ HEADLESS_MODE = False  # Change to True to run without opening a browser
 
 ## 🚀 **Running the Crawler**
 
-### **Normal Mode (With Browser)**
+Choose one or more scrapers to run using the `--scrapers` flag. Scrapers run
+sequentially after a single login.
+
+Available scrapers:
+
+- `crawler`
+- `workflows`
+- `user-roles`
+- `list-values`
+
+### **Examples**
+
+Scrape list values and user roles:
 
 ```sh
-python main.py
+python main.py --scrapers list-values,user-roles
 ```
-Running the script logs in and **scrapes permissions for all user roles**. The
-results are saved to `user_role_permissions.csv` in the project directory.
 
-#### **NB: This only applies to user accounts with Administrative Privileges**
+Scrape workflows for specific record types:
 
-- You manually enter the 2FA code in the browser when prompted.
-- The bot automatically iterates through the role list and exports the CSV.
-
----
+```sh
+python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
+```
 
 ### **Headless Mode (Without Browser)**
 
@@ -85,18 +94,12 @@ Edit config.py and set:
 HEADLESS_MODE = True
 ```
 
-Then run:
-
-```sh
-python main.py
-```
-The process is the same as normal mode, but the browser window stays hidden. The
-script prompts you for the 2FA code in the console and then scrapes all role
-permissions automatically.
+Use the same command-line options; the browser runs hidden and prompts you in
+the terminal for the 2FA code.
 
 #### **NB: This only applies to user accounts with Administrative Privileges**
 
-- Provide the 2FA code when prompted in the terminal.
+- Provide the 2FA code when prompted.
 
 ---
 
