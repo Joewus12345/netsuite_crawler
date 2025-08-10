@@ -133,15 +133,17 @@ the terminal for the 2FA code.
 
 ```sh
 📂 netsuite_crawler
- ┣ 📂 chromedriver        # Stores driver for chrome browser
- ┣ 📂 venv                # Stores python environment
- ┣ 📜 config.py           # Stores credentials & config
- ┣ 📜 main.py             # Entry point for the bot
- ┣ 📜 crawler.py          # Core logic for logging in & crawling
- ┣ 📜 user_roles_scraper.py   # Scrapes role permissions
- ┣ 📜 workflow_scraper.py     # Scrapes workflow actions
- ┣ 📜 requirements.txt    # Dependencies list
- ┣ 📜 README.md           # Project documentation (You are here!)
+ ┣ 📜 config.py              # Stores credentials & config
+ ┣ 📂 chromedriver           # Chrome browser for running project
+ ┣ 📜 main.py                # Entry point for the bot
+ ┣ 📜 auth_utils.py          # Authentication helpers
+ ┣ 📜 crawler.py             # Core logic for logging in & crawling
+ ┣ 📜 list_values_scraper.py # Scrapes custom list values
+ ┣ 📜 user_roles_scraper.py  # Scrapes role permissions
+ ┣ 📜 workflow_scraper.py    # Scrapes workflow actions
+ ┣ 📂 tests                  # Unit tests
+ ┣ 📜 requirements.txt       # Dependencies list
+ ┗ 📜 README.md              # Project documentation (You are here!)
 ```
 
 ---
