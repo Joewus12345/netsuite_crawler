@@ -53,13 +53,19 @@ def scrape_list_values(driver):
 
     for name, href in links:
         driver.get(href)
+
+        values_tab = driver.find_element(By.ID, "customvaluelnk")
+        if values_tab.get_attribute("aria-selected") != "true":
+            driver.execute_script("arguments[0].click();", values_tab)
+
         WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "tr.uir-list-row-tr"))
+            EC.presence_of_element_located((By.ID, "customvalue_splits"))
         )
         values = [
             cell.text.strip()
             for cell in driver.find_elements(
-                By.CSS_SELECTOR, "tr.uir-list-row-tr td:first-child"
+                By.CSS_SELECTOR,
+                "#customvalue_splits tr.uir-list-row-tr td:first-child",
             )
             if cell.text.strip()
         ]
