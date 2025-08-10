@@ -62,6 +62,10 @@ SECURITY_ANSWER = "your-security-question-answer"
 HEADLESS_MODE = False  # Change to True to run without opening a browser
 ```
 
+> **Note:** The NetSuite administrator login URL can vary between companies or
+> accounts. Replace `https://your-netsuite-url.com` with the correct admin URL
+> for your environment.
+
 ---
 
 ## 🚀 **Running the Crawler**
@@ -86,8 +90,25 @@ python main.py --scrapers list-values,user-roles
 
 Scrape workflows for specific record types:
 
-```sh
+The `--records` flag expects a JSON array of record-type names. Quoting rules
+vary by terminal:
+
+**bash (Linux/macOS):**
+
+```bash
 python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
+```
+
+**PowerShell:**
+
+```powershell
+python main.py --scrapers workflows --records "[`"Admin Request`",`"Feedback`"]"
+```
+
+**cmd.exe:**
+
+```cmd
+python main.py --scrapers workflows --records "[\"Admin Request\",\"Feedback\"]"
 ```
 
 ### **Headless Mode (Without Browser)**
