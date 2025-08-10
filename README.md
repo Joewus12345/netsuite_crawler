@@ -81,6 +81,14 @@ Available scrapers:
 - `user-roles`
 - `list-values`
 
+### Default Output Files
+
+Each scraper saves its results to a CSV file in the project root:
+
+- `list-values` → **`list_values.csv`**, containing custom list IDs, names, and their associated values.
+- `user-roles` → **`user_role_permissions.csv`**, capturing each role's permissions across transactions, reports, lists, and setup categories.
+- `workflows` → **`workflow_actions.csv`**, listing workflow names, record types, and their associated actions.
+
 ### **Examples**
 
 Scrape list values and user roles:
