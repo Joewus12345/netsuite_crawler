@@ -108,12 +108,6 @@ vary by terminal:
 python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
 ```
 
-**PowerShell:**
-
-```powershell
-python main.py --scrapers workflows --records "[`"Admin Request`",`"Feedback`"]"
-```
-
 **cmd.exe:**
 
 ```cmd
