@@ -10,6 +10,8 @@ import re
 from bs4 import BeautifulSoup
 from config import SECURITY_ANSWER, HEADLESS_MODE
 
+HARDCODED: list[str] = []  # e.g., ["Admin Request", "Feedback"]
+
 # ── Phase 1: HRA Record Types Extraction ────────────────────────────────────
 def switch_to_hra_role(driver):
     url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~18903~1059~N"
@@ -584,8 +586,11 @@ def run(driver, records=None):
     """
 
     if records is None:
-        switch_to_hra_role(driver)
-        records = extract_hra_record_types(driver)
+        if HARDCODED:
+            records = HARDCODED
+        else:
+            switch_to_hra_role(driver)
+            records = extract_hra_record_types(driver)
 
     switch_to_admin_role(driver)
 
