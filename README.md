@@ -114,6 +114,14 @@ python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
 python main.py --scrapers workflows --records "[\"Admin Request\",\"Feedback\"]"
 ```
 
+For quick runs you can pre-populate `workflow_scraper.HARDCODED` with a list of
+record names. This list is used whenever `--records` is not passed:
+
+```python
+# workflow_scraper.py
+HARDCODED: list[str] = ["Admin Request", "Feedback"]
+```
+
 ### **Headless Mode (Without Browser)**
 
 Edit config.py and set:
