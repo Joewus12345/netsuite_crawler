@@ -26,10 +26,7 @@ Dispatch scrapers from `main.py`:
 python main.py --scrapers workflows,user-roles
 ```
 To provide record types for the workflow scraper, pass JSON via `--records`.
-PowerShell example:
-```powershell
-python .\main.py --scrapers workflows --records '["Sales Order", "Purchase Order"]'
-```
+PowerShell is not officially supported; use Bash or cmd instead.
 
 ## Output
 Scrapers write CSV files (`user_role_permissions.csv`, `list_values.csv`, etc.) to the current working directory.
