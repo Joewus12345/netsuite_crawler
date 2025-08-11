@@ -28,6 +28,18 @@ python main.py --scrapers workflows,user-roles
 To provide record types for the workflow scraper, pass JSON via `--records`.
 PowerShell is not officially supported; use Bash or cmd instead.
 
+**bash (Linux/macOS):**
+
+```bash
+python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
+```
+
+**cmd.exe:**
+
+```cmd
+python main.py --scrapers workflows --records "[\"Admin Request\",\"Feedback\"]"
+```
+
 ## Output
 Scrapers write CSV files (`user_role_permissions.csv`, `list_values.csv`, etc.) to the current working directory.
 
