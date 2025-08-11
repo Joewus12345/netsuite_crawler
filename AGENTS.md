@@ -26,9 +26,18 @@ Dispatch scrapers from `main.py`:
 python main.py --scrapers workflows,user-roles
 ```
 To provide record types for the workflow scraper, pass JSON via `--records`.
-PowerShell example:
-```powershell
-python .\main.py --scrapers workflows --records '["Sales Order", "Purchase Order"]'
+PowerShell is not officially supported; use Bash or cmd instead.
+
+**bash (Linux/macOS):**
+
+```bash
+python main.py --scrapers workflows --records '["Admin Request","Feedback"]'
+```
+
+**cmd.exe:**
+
+```cmd
+python main.py --scrapers workflows --records "[\"Admin Request\",\"Feedback\"]"
 ```
 
 ## Output
