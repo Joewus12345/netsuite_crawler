@@ -16,7 +16,7 @@ This project is a **Python-based web crawler** that **logs into NetSuite**, navi
 ✅ **Extracts Workflow Actions** for any record type  
 ✅ **Scrapes Custom List Values into CSV**  
 ✅ **Exports Scraped Data to CSV**  
-✅ **Handles Multi‐Page Role Lists with Pagination**  
+✅ **Handles Multi‐Page Role Lists with Pagination**
 
 ---
 
@@ -189,3 +189,12 @@ div[data-type='primary'][role='button']
 
 - Try logging in manually to ensure credentials are correct.
 - Check if NetSuite has CAPTCHA enabled (this bot does not bypass CAPTCHA).
+
+### 4️⃣ Change Role Not Working?
+
+- Check the role url which usually is different from user to user i.e. (
+  ADMIN_ROLE_URL = (
+  "<https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~18903~1114~N>"
+  )
+  )
+  The section containing `changerole.nl?id=4891605~18903~1114~N` has a different unique number for each and every user (`18903` for user id and `1114` for role id need to be precise).

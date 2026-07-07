@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # ── Phase 1: List Values Navigation & Scrape ─────────────────────────────
 ADMIN_ROLE_URL = (
     "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?"
-    "id=4891605~19522~1073~N"
+    "id=4891605~9203~1114~N"
 )
 
 

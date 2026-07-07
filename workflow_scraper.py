@@ -14,7 +14,7 @@ HARDCODED: list[str] = []  # e.g., ["Admin Request", "Feedback"]
 
 # ── Phase 1: HRA Record Types Extraction ────────────────────────────────────
 def switch_to_hra_role(driver):
-    url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~18903~1059~N"
+    url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~9203~1059~N"
     driver.get(url)
 
     # ✅ Handle security questions
@@ -56,7 +56,7 @@ def extract_hra_record_types(driver):
 
 # ── Phase 2: Workflow List Navigation & Filter ─────────────────────────────
 def switch_to_admin_role(driver):
-    url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~18903~1114~N"
+    url = "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?id=4891605~9203~1114~N"
     driver.get(url)
     
     # ✅ Handle 2FA Authentication

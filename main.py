@@ -10,6 +10,7 @@ import crawler
 import workflow_scraper as ws
 import user_roles_scraper as urs
 import list_values_scraper as lvs
+import record_catalogs_scraper as rcs
 
 from config import HEADLESS_MODE
 
@@ -36,7 +37,7 @@ def parse_args():
         "--scrapers",
         help=(
             "Comma-separated list of scrapers to run. "
-            "Available: crawler, workflows, user-roles, list-values"
+            "Available: crawler, workflows, user-roles, list-values, record-catalogs"
         ),
         default="",
     )
@@ -68,6 +69,7 @@ def main():
         "workflows": lambda d: ws.run(d, records),
         "user-roles": lambda d: urs.run(d),
         "list-values": lambda d: lvs.run(d),
+        "record-catalogs": lambda d: rcs.run(d),
     }
 
     crawler.login_netsuite(driver)
