@@ -129,13 +129,35 @@ RESUME_FROM_CHECKPOINT = True
 
 # Old `no_fields_grid` rows are not final; V2 uses a fresh status file.
 # Only `verified_no_catalog_tables` is considered final/no-fields/no-joins.
-DONE_STATUSES = {"success", "verified_no_catalog_tables", "skipped_missing_name"}
+DONE_STATUSES = {"success", "verified_zero_joins", "verified_no_catalog_tables", "skipped_missing_name"}
+
+# Resume/recheck policy for records that previously succeeded with 0 joins:
+# A previous run may have marked Join Count = 0 because the Joins tab was slow
+# or connectivity delayed hydration. On resume, these records are deliberately
+# re-opened and Joins-only is scraped again. If Joins still returns 0 after the
+# full Joins verification sequence, the record is marked verified_zero_joins so
+# future resumes can safely skip it.
+RECHECK_ZERO_JOINS_ON_RESUME = True
+ZERO_JOINS_RECHECK_SOURCE_STATUSES = {"success"}
+
+# If you want to recheck only the first N zero-join records during testing,
+# set this to a number like 10. Leave as None for full resume behavior.
+ZERO_JOINS_RECHECK_LIMIT = None
 
 # If a record seems to have no fields, verify that conclusion with longer waits
 # before writing `verified_no_catalog_tables`.
 NO_FIELDS_GRID_VERIFY_ATTEMPTS = 3
 NO_FIELDS_GRID_VERIFY_TIMEOUTS = [12, 25, 45]
 NO_FIELDS_GRID_RECHECK_PAUSE = 2.5
+
+# Apply the same verification idea to the Joins tab.
+# Some records load Fields quickly but hydrate Joins much later. Previously,
+# scrape_joins_grid() returned [] after one timeout, which could create a false
+# "0 joins" result. These settings make Joins re-check 3 times before accepting
+# that a record has no joins.
+NO_JOINS_GRID_VERIFY_ATTEMPTS = 3
+NO_JOINS_GRID_VERIFY_TIMEOUTS = [12, 25, 45]
+NO_JOINS_GRID_RECHECK_PAUSE = 2.5
 
 FIELDNAMES = [
     "Record Name",
@@ -1777,18 +1799,161 @@ def read_visible_join_rows(driver, record_name, record_id, category_state=None, 
     return parsed
 
 
-def scrape_joins_grid(driver, record_name, record_id, max_scrolls=220):
+
+def visible_joins_content_state(driver):
     """
-    Scrapes the Joins tab into a separate CSV output.
-    Includes category/sublists synthetic rows and expandable nested join rows.
+    Returns information about the visible Joins grid content.
+
+    We only count body rows (data/synthetic), not the header row. This helps us
+    distinguish between "the Joins tab is visible but still empty/loading" and
+    "join rows are actually available to scrape".
     """
     set_active_grid(JOINS_GRID)
 
     try:
-        select_catalog_tab(driver, "Joins")
-        get_grid(driver)
-    except TimeoutException:
-        logger.info(f"ℹ️ No Joins grid appeared for {record_name}. Treating joins as 0.")
+        grid = get_visible_grid_now(driver, JOINS_GRID)
+        if not grid:
+            return {
+                "grid": None,
+                "signature": "",
+                "content_count": 0,
+                "indexes": [],
+            }
+
+        rows = grid.find_elements(By.CSS_SELECTOR, '[data-widget="GridRowSegment"]')
+
+        parts = []
+        indexes = []
+        content_count = 0
+
+        for row in rows:
+            row_type = row.get_attribute("data-row-type") or ""
+            if row_type not in {"data", "synthetic"}:
+                continue
+
+            content_count += 1
+
+            raw_index = row.get_attribute("data-index") or ""
+            if raw_index.isdigit() and row_type == "data":
+                indexes.append(int(raw_index))
+
+            parts.append(
+                "|".join([
+                    row_type,
+                    raw_index,
+                    row.get_attribute("data-row-id") or "",
+                    clean_text(row.text)[:120],
+                ])
+            )
+
+        return {
+            "grid": grid,
+            "signature": "||".join(parts),
+            "content_count": content_count,
+            "indexes": sorted(set(indexes)),
+        }
+
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        return {
+            "grid": None,
+            "signature": "",
+            "content_count": 0,
+            "indexes": [],
+        }
+
+
+def wait_for_joins_grid_ready(driver, record_name, record_id, timeout=None):
+    """
+    Selects the right-side Joins tab and waits/retries until the Joins grid has
+    actually hydrated.
+
+    Returns:
+    - visible Joins grid WebElement when content rows are available
+    - None after 3 verification attempts when Joins appears to be genuinely empty
+
+    This mirrors the Fields no-grid verification logic: Joins are not allowed to
+    silently return [] after a single slow load/timeout.
+    """
+    set_active_grid(JOINS_GRID)
+
+    if timeout is not None:
+        verify_timeouts = [timeout]
+    else:
+        verify_timeouts = NO_JOINS_GRID_VERIFY_TIMEOUTS[:NO_JOINS_GRID_VERIFY_ATTEMPTS]
+
+    for verify_attempt, verify_timeout in enumerate(verify_timeouts, start=1):
+        try:
+            set_active_grid(JOINS_GRID)
+
+            logger.info(
+                f"🔎 Waiting for Joins grid for {record_name} | {record_id} "
+                f"| joins verification {verify_attempt}/{len(verify_timeouts)} "
+                f"| timeout={verify_timeout}s"
+            )
+
+            select_catalog_tab(driver, "Joins", timeout=min(15, verify_timeout))
+            get_grid(driver, JOINS_GRID, timeout=min(15, verify_timeout))
+
+            end = time.monotonic() + verify_timeout
+            last_signature = ""
+            stable_empty_since = None
+
+            while time.monotonic() < end:
+                state = visible_joins_content_state(driver)
+
+                if state["grid"] and state["content_count"] > 0:
+                    wait_for_grid_stable(driver, stable_for=0.8, timeout=12)
+                    return state["grid"]
+
+                # If the visible Joins grid is empty, keep watching for a while.
+                # NetSuite sometimes paints the tab/header first, then injects
+                # the virtual rows later.
+                current_signature = state["signature"]
+
+                if state["grid"] and current_signature == last_signature:
+                    if stable_empty_since is None:
+                        stable_empty_since = time.monotonic()
+                else:
+                    stable_empty_since = None
+                    last_signature = current_signature
+
+                time.sleep(0.25)
+
+            raise TimeoutException(
+                f"Joins grid did not expose content rows within {verify_timeout}s"
+            )
+
+        except TimeoutException:
+            if verify_attempt < len(verify_timeouts):
+                logger.warning(
+                    f"⚠️ No Joins rows/grid yet for {record_name} | {record_id}; "
+                    f"rechecking after {NO_JOINS_GRID_RECHECK_PAUSE}s."
+                )
+                time.sleep(NO_JOINS_GRID_RECHECK_PAUSE)
+                continue
+
+    logger.info(
+        f"ℹ️ No Joins grid rows appeared for {record_name} | {record_id} "
+        f"after {len(verify_timeouts)} verification attempt(s). "
+        "Treating joins as 0."
+    )
+    return None
+
+
+def scrape_joins_grid(driver, record_name, record_id, max_scrolls=220):
+    """
+    Scrapes the Joins tab into a separate CSV output.
+    Includes category/sublists synthetic rows and expandable nested join rows.
+
+    The Joins tab now uses the same 3-step verification idea as Fields. It does
+    not return [] after one slow timeout; it rechecks before accepting 0 joins.
+    If the grid appears and then scraping fails midway, the outer
+    GRID_SCRAPE_MAX_ATTEMPTS loop still retries the combined field/join scrape.
+    """
+    set_active_grid(JOINS_GRID)
+
+    grid = wait_for_joins_grid_ready(driver, record_name, record_id)
+    if grid is None:
         return []
 
     wait_for_grid_stable(driver, stable_for=0.8, timeout=12)
@@ -1981,19 +2146,58 @@ def read_csv_dicts(filename):
         return list(csv.DictReader(f))
 
 
+def safe_int(value, default=0):
+    try:
+        return int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def should_recheck_zero_joins_status(row):
+    """
+    Returns True for records that completed successfully but had Join Count = 0.
+
+    These are the records we want to reopen on resume because a zero join count
+    can be a false positive when NetSuite's Joins tab hydrates slowly.
+    """
+    if not RECHECK_ZERO_JOINS_ON_RESUME:
+        return False
+
+    status = (row.get("Status") or "").strip()
+    if status not in ZERO_JOINS_RECHECK_SOURCE_STATUSES:
+        return False
+
+    return safe_int(row.get("Join Count"), default=0) == 0
+
+
+def count_existing_record_rows(rows, record_id):
+    if not record_id:
+        return 0
+
+    return sum(
+        1 for row in rows
+        if (row.get("Record ID") or "") == record_id
+    )
+
+
 def load_existing_progress():
     """
     Loads prior V2 partial field/join rows and status rows so a resumed run does
     not start from scratch.
+
+    New behavior:
+    - successful records with Join Count > 0 are skipped as before
+    - successful records with Join Count == 0 are re-opened for Joins-only recheck
+    - records marked verified_zero_joins are skipped on later resumes
     """
     if not RESUME_FROM_CHECKPOINT:
-        return [], [], [], set()
+        return [], [], [], set(), set()
 
     status_rows = read_csv_dicts(STATUS_FILE)
 
     if not status_rows:
         logger.info("ℹ️ No previous V2 status checkpoint found. Starting from record 1.")
-        return [], [], [], set()
+        return [], [], [], set(), set()
 
     if not os.path.exists(PARTIAL_FIELDS_FILE):
         raise RuntimeError(
@@ -2012,29 +2216,52 @@ def load_existing_progress():
 
     latest_status_by_index = {}
     for row in status_rows:
-        try:
-            record_index = int(row.get("Record Index", "0"))
-        except ValueError:
+        record_index = safe_int(row.get("Record Index"), default=0)
+        if record_index <= 0:
             continue
 
         latest_status_by_index[record_index] = row
 
-    done_indexes = {
-        record_index - 1
-        for record_index, row in latest_status_by_index.items()
-        if (row.get("Status") or "").strip() in DONE_STATUSES
-    }
+    done_indexes = set()
+    zero_join_recheck_indexes = set()
+
+    for record_index, row in latest_status_by_index.items():
+        zero_based_index = record_index - 1
+        status = (row.get("Status") or "").strip()
+
+        if should_recheck_zero_joins_status(row):
+            zero_join_recheck_indexes.add(zero_based_index)
+            continue
+
+        if status in DONE_STATUSES:
+            done_indexes.add(zero_based_index)
+
+    if ZERO_JOINS_RECHECK_LIMIT is not None:
+        zero_join_recheck_indexes = set(
+            sorted(zero_join_recheck_indexes)[:ZERO_JOINS_RECHECK_LIMIT]
+        )
 
     logger.info(
         f"🔁 Resume mode active: loaded {len(field_rows)} previous field rows, "
         f"{len(join_rows)} previous join rows, {len(status_rows)} status rows, "
-        f"and {len(done_indexes)} completed records."
+        f"{len(done_indexes)} completed records, and "
+        f"{len(zero_join_recheck_indexes)} zero-join records queued for Joins recheck."
     )
+
+    if zero_join_recheck_indexes:
+        logger.info(
+            "🔁 Zero-join records queued for Joins recheck: "
+            + ", ".join(str(i + 1) for i in sorted(zero_join_recheck_indexes)[:20])
+            + ("..." if len(zero_join_recheck_indexes) > 20 else "")
+        )
 
     failed_or_unfinished = [
         record_index
         for record_index, row in latest_status_by_index.items()
-        if (row.get("Status") or "").strip() not in DONE_STATUSES
+        if (
+            (row.get("Status") or "").strip() not in DONE_STATUSES
+            and (record_index - 1) not in zero_join_recheck_indexes
+        )
     ]
 
     if failed_or_unfinished:
@@ -2044,8 +2271,7 @@ def load_existing_progress():
             + ("..." if len(failed_or_unfinished) > 20 else "")
         )
 
-    return field_rows, join_rows, status_rows, done_indexes
-
+    return field_rows, join_rows, status_rows, done_indexes, zero_join_recheck_indexes
 
 def remove_existing_record_rows(rows, record_id):
     if not record_id:
@@ -2068,7 +2294,7 @@ def scrape_record_catalogs(driver):
     limit = TEST_LIMIT if TEST_LIMIT is not None else total_records
     limit = min(limit, total_records)
 
-    field_results, join_results, status_rows, done_indexes = load_existing_progress()
+    field_results, join_results, status_rows, done_indexes, zero_join_recheck_indexes = load_existing_progress()
     processed_count = 0
     stop_scrape = False
     skipped_done = 0
@@ -2081,7 +2307,15 @@ def scrape_record_catalogs(driver):
                     logger.info(f"⏭️ Skipped {skipped_done} already-completed records from V2 checkpoint.")
                 continue
 
+            recheck_joins_only = index in zero_join_recheck_indexes
+
             logger.info(f"\n➡️ Processing record index {index + 1}/{limit}")
+
+            if recheck_joins_only:
+                logger.info(
+                    f"🔁 Record index {index + 1} previously had Join Count = 0. "
+                    "Rechecking Joins only and preserving existing field rows."
+                )
 
             parent_id = None
             record_name = ""
@@ -2125,6 +2359,75 @@ def scrape_record_catalogs(driver):
                     field_rows = []
                     join_rows = []
                     last_scrape_error = None
+
+                    if recheck_joins_only:
+                        existing_field_count = count_existing_record_rows(field_results, record_id)
+
+                        for scrape_attempt in range(1, GRID_SCRAPE_MAX_ATTEMPTS + 1):
+                            try:
+                                logger.info(
+                                    f"🔁 Rechecking Joins only for {record_name} "
+                                    f"| attempt {scrape_attempt}/{GRID_SCRAPE_MAX_ATTEMPTS}"
+                                )
+
+                                join_rows = scrape_joins_grid(driver, record_name, record_id)
+
+                                remove_existing_record_rows(join_results, record_id)
+                                join_results.extend(join_rows)
+
+                                status = "success" if join_rows else "verified_zero_joins"
+
+                                if join_rows:
+                                    logger.info(
+                                        f"✅ Rechecked Joins for {record_name}: "
+                                        f"found {len(join_rows)} join row(s)."
+                                    )
+                                else:
+                                    logger.info(
+                                        f"✅ Rechecked Joins for {record_name}: "
+                                        "still 0 joins after verification."
+                                    )
+
+                                add_status(
+                                    status_rows,
+                                    index,
+                                    record_name,
+                                    record_id,
+                                    status,
+                                    field_count=existing_field_count,
+                                    join_count=len(join_rows),
+                                    attempts=scrape_attempt,
+                                )
+
+                                force_checkpoint_now = True
+                                record_done = True
+                                break
+
+                            except (TimeoutException, StaleElementReferenceException, WebDriverException) as e:
+                                last_scrape_error = e
+                                logger.warning(
+                                    f"⚠️ Joins-only recheck failed for {record_name}, "
+                                    f"attempt {scrape_attempt}/{GRID_SCRAPE_MAX_ATTEMPTS}: {e}"
+                                )
+                                time.sleep(2)
+
+                        if not record_done:
+                            force_checkpoint_now = True
+                            add_status(
+                                status_rows,
+                                index,
+                                record_name,
+                                record_id,
+                                "failed_join_recheck",
+                                field_count=existing_field_count,
+                                join_count=0,
+                                attempts=GRID_SCRAPE_MAX_ATTEMPTS,
+                                error=last_scrape_error,
+                            )
+                            logger.warning(f"❌ Giving up Joins-only recheck for {record_name}.")
+                            record_done = True
+
+                        break
 
                     if fields_grid is None:
                         # Usually means there is no query API detail grid. We still
