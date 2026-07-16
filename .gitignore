@@ -3,3 +3,7 @@ workflow_actions.csv
 *.csv
 venv/
 record_catalogs_fields.partial.csv.tmp
+
+selenium_profiles/
+*.cookie
+*.cookies.json

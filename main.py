@@ -12,10 +12,26 @@ import user_roles_scraper as urs
 import list_values_scraper as lvs
 import record_catalogs_scraper as rcs
 
-from config import HEADLESS_MODE
+from config import HEADLESS_MODE, PERSIST_BROWSER_PROFILE, CHROME_PROFILE_DIR
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+def create_driver():
+    chrome_options = webdriver.ChromeOptions()
+
+    if HEADLESS_MODE:
+        chrome_options.add_argument("--headless=new")
+
+    chrome_options.add_argument("--start-maximized")
+
+    if PERSIST_BROWSER_PROFILE:
+        chrome_options.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
+        chrome_options.add_argument("--profile-directory=Default")
+
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
 
 
 def build_driver():
@@ -62,7 +78,7 @@ def main():
             )
             sys.exit(1)
 
-    driver = build_driver()
+    driver = create_driver()
 
     scrapers = {
         "crawler": lambda d: crawler.run(d),

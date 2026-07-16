@@ -7,6 +7,78 @@ from config import HEADLESS_MODE
 
 logger = logging.getLogger(__name__)
 
+def tick_remember_device_if_present(driver):
+    """
+    Attempts to tick NetSuite's remember/trust device checkbox if present.
+    The exact text can vary by account/security setup.
+    """
+    try:
+        checkbox = driver.execute_script(
+            """
+            const keywords = ["remember", "trust", "30 days", "do not ask"];
+
+            const labels = [...document.querySelectorAll("label")];
+
+            for (const label of labels) {
+                const text = (label.textContent || "").trim().toLowerCase();
+
+                if (!keywords.some(k => text.includes(k))) continue;
+
+                const forId = label.getAttribute("for");
+
+                if (forId) {
+                    const input = document.getElementById(forId);
+                    if (input) return input;
+                }
+
+                const wrapper = label.closest("div, span, td, tr");
+                if (wrapper) {
+                    const candidate = wrapper.querySelector(
+                        "input[type='checkbox'], [role='checkbox']"
+                    );
+                    if (candidate) return candidate;
+                }
+            }
+
+            return null;
+            """
+        )
+
+        if not checkbox:
+            return False
+
+        checked = (
+            checkbox.get_attribute("checked")
+            or checkbox.get_attribute("aria-checked")
+            or ""
+        ).lower()
+
+        if checked not in {"true", "checked"}:
+            driver.execute_script(
+                """
+                const el = arguments[0];
+
+                if (typeof el.click === "function") {
+                    el.click();
+                } else {
+                    el.dispatchEvent(new MouseEvent("click", {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                }
+                """,
+                checkbox,
+            )
+
+        logger.info("☑️ Remember/trust device option selected if available.")
+        return True
+
+    except Exception as e:
+        logger.warning(f"⚠️ Could not tick remember-device checkbox: {e}")
+        return False
+
+
 def switch_to_admin_role(driver, role_url):
     """Switch the current session to an administrator role, handling 2FA if necessary.
 
@@ -22,6 +94,8 @@ def switch_to_admin_role(driver, role_url):
 
     if "loginchallenge/entry.nl" in getattr(driver, "current_url", ""):
         logger.info("🔐 2FA Authentication Required!")
+        
+        tick_remember_device_if_present(driver)
 
         if HEADLESS_MODE:
             two_fa_code = input("🔢 Enter 2FA Code: ")
@@ -47,7 +121,13 @@ def switch_to_admin_role(driver, role_url):
                 return
         else:
             logger.info("⏳ Waiting for manual 2FA entry in the browser…")
-            time.sleep(30)
+            
+            WebDriverWait(driver, 180).until(
+                lambda d: "loginchallenge/entry.nl" not in d.current_url
+            )
+
+            logger.info("✅ Manual 2FA completed.")
+            time.sleep(3)
 
     WebDriverWait(driver, 10).until(EC.url_contains("whence"))
     logger.info("🔄 Switched to admin role.")

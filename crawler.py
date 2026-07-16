@@ -3,10 +3,13 @@ from selenium.webdriver.common.by import By  # Find elements
 # from selenium.webdriver.common.keys import Keys  # Send input
 from selenium.webdriver.support.ui import WebDriverWait  # Handle delays
 from selenium.webdriver.support import expected_conditions as EC  # Handle dynamic elements
+from config import NETSUITE_BASE_URL
 import time  # For delays
+import logging
 from urllib.parse import urljoin  # Handle URLs
 import requests  # requests for HTTP requests
 from bs4 import BeautifulSoup  # Parses HTML to extract links
+from auth_utils import tick_remember_device_if_present
 from config import (
     NETSUITE_URL,
     NETSUITE_EMAIL,
@@ -26,7 +29,42 @@ from config import (
     # options.add_argument("--window-size=1920,1080")  # Set browser size
 # driver = webdriver.Chrome(options=options)
 
+logger = logging.getLogger(__name__)
+
+def is_netsuite_logged_in(driver, timeout=8):
+    """
+    Checks whether the persistent browser profile already has a valid NetSuite session.
+    """
+    driver.get(f"{NETSUITE_BASE_URL}/app/center/card.nl?whence=")
+    time.sleep(2)
+
+    current_url = driver.current_url.lower()
+
+    login_indicators = [
+        "/app/login/",
+        "login.nl",
+        "securityquestions.nl",
+        "loginchallenge/entry.nl",
+    ]
+
+    if any(marker in current_url for marker in login_indicators):
+        return False
+
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: "app.netsuite.com" in d.current_url.lower()
+        )
+        logger.info("✅ Existing NetSuite browser session/profile is valid.")
+        return True
+    except Exception:
+        return False
+
+
 def login_netsuite(driver):
+    """Check for existing NetSuite Session before the NetSuite login workflow logic"""
+    if is_netsuite_logged_in(driver):
+        logger.info("✅ Skipping login because existing NetSuite session is active.")
+        return True
     """Logs into NetSuite, handles 2FA dynamically, and navigates to the 'Admin Item' Custom Record."""
     driver.get(NETSUITE_URL)
 
@@ -48,6 +86,7 @@ def login_netsuite(driver):
         # ✅ Handle 2FA Authentication
         if "loginchallenge/entry.nl" in driver.current_url:
             print("🔐 2FA Authentication Required!")
+            tick_remember_device_if_present(driver)
 
             if HEADLESS_MODE:
                 # Headless Mode → Enter 2FA Code in Console
@@ -83,7 +122,11 @@ def login_netsuite(driver):
             else:
                 # Non-Headless Mode → User enters 2FA manually
                 print("⏳ Waiting for manual 2FA entry in the browser...")
-                time.sleep(30)  # Give user 30 seconds to enter the code manually
+                WebDriverWait(driver, 180).until(
+                    lambda d: "loginchallenge/entry.nl" not in d.current_url
+                )
+                print("✅ Manual 2FA completed.")
+                time.sleep(3)
 
         # ✅ Handle security questions
         if "securityquestions.nl" in driver.current_url:

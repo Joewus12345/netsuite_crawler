@@ -56,11 +56,29 @@ Create a config.py file in the root directory and add your NetSuite credentials:
 ```sh
 # config.py
 
+# Login credentials
 NETSUITE_URL = "https://your-netsuite-url.com"
 NETSUITE_EMAIL = "your-email@example.com"
 NETSUITE_PASSWORD = "your-password"
+
+# Security Questions (Modify based on actual questions)
 SECURITY_ANSWER = "your-security-question-answer"
+
+# ✅ URL for Custom Record "Admin Item"
+ADMIN_ITEM_URL = "https://4891605.app.netsuite.com/app/common/custom/custrecord.nl?id=<custom record id>" # Necessary for workflow scraping
+
+# ✅ Configure WebDriver (Allow headless mode)
 HEADLESS_MODE = False  # Change to True to run without opening a browser
+
+import os
+
+PERSIST_BROWSER_PROFILE = True
+
+CHROME_PROFILE_DIR = os.path.abspath(
+    os.path.join("selenium_profiles", "netsuite_chrome") #You can choose a different folder (selenium_profiles) and account profile (netsuite_chrome).
+)
+
+NETSUITE_BASE_URL = "https://4891605.app.netsuite.com" # Change the BASE_URL to match your NetSuite Base Url
 ```
 
 > **Note:** The NetSuite administrator login URL can vary between companies or

@@ -24,9 +24,14 @@ from auth_utils import switch_to_admin_role as _switch_to_admin_role
 
 logger = logging.getLogger(__name__)
 
+
+class IncompleteGridScrapeError(WebDriverException):
+    """Raised when a grid keeps moving until the configured scroll safety cap."""
+
+
 ADMIN_ROLE_URL = (
     "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?"
-    "id=4891605~9203~1073~N"
+    "id=4891605~10457~1073~N"
 )
 
 RECORD_CATALOG_URL = (
@@ -119,6 +124,36 @@ FINAL_JOINS_FILE = "record_catalogs_joins_v2.csv"
 EXPAND_CLICK_MAX_ATTEMPTS = 3
 GRID_SCRAPE_MAX_ATTEMPTS = 2
 
+# A virtualized NetSuite grid can ignore one wheel/PageDown event while it is
+# hydrating. Never declare the end of a Fields/Joins grid after one stalled
+# scroll. The scraper retries the same boundary several times before stopping.
+GRID_SCROLL_STALL_MAX_ATTEMPTS = 4
+GRID_SCROLL_STALL_RETRY_PAUSE = 0.9
+GRID_SCROLL_CHANGE_TIMEOUT = 3
+GRID_SCROLL_FALLBACK_TIMEOUT = 2
+
+# Resume repair policy:
+#
+# The old status file can say ``success`` even when a virtualized grid stopped
+# moving early. A status count alone cannot prove that every field was reached.
+# Therefore completed records that contain catalog data are queued for a
+# ONE-TIME full Fields + Joins repair pass. The repaired status names below are
+# final, so later resumes do not keep scraping the same records forever.
+#
+# Records already proven to have no Fields and no Joins remain untouched.
+REPAIR_COMPLETED_CATALOG_RECORDS_ON_RESUME = True
+REPAIR_SOURCE_STATUSES = {"success", "verified_zero_joins"}
+REPAIR_FINAL_STATUSES = {
+    "repair_success",
+    "repair_verified_zero_joins",
+    "repair_success_zero_fields",
+}
+
+# Optional test/scope controls. Use 1-based Record Index values, for example
+# {999, 1000}. Leave as None to repair every eligible record from the status.
+REPAIR_ONLY_RECORD_INDEXES = None
+REPAIR_RECORD_LIMIT = None
+
 # Resume policy:
 # - Keep the V2 partial CSVs and V2 status CSV in the same folder.
 # - On the next run, the scraper loads them, skips records already marked done,
@@ -129,7 +164,13 @@ RESUME_FROM_CHECKPOINT = True
 
 # Old `no_fields_grid` rows are not final; V2 uses a fresh status file.
 # Only `verified_no_catalog_tables` is considered final/no-fields/no-joins.
-DONE_STATUSES = {"success", "verified_zero_joins", "verified_no_catalog_tables", "skipped_missing_name"}
+DONE_STATUSES = {
+    "success",
+    "verified_zero_joins",
+    "verified_no_catalog_tables",
+    "skipped_missing_name",
+    *REPAIR_FINAL_STATUSES,
+}
 
 # Resume/recheck policy for records that previously succeeded with 0 joins:
 # A previous run may have marked Join Count = 0 because the Joins tab was slow
@@ -139,6 +180,11 @@ DONE_STATUSES = {"success", "verified_zero_joins", "verified_no_catalog_tables",
 # future resumes can safely skip it.
 RECHECK_ZERO_JOINS_ON_RESUME = True
 ZERO_JOINS_RECHECK_SOURCE_STATUSES = {"success"}
+
+# Prevent the resume pass from spending minutes rechecking records that had
+# neither Fields nor Joins in the previous run. Those are usually empty catalog
+# records, not false-zero Joins.
+RECHECK_ZERO_JOINS_REQUIRE_EXISTING_FIELDS = True
 
 # If you want to recheck only the first N zero-join records during testing,
 # set this to a number like 10. Leave as None for full resume behavior.
@@ -1002,6 +1048,27 @@ def reset_fields_grid_to_top(driver, max_attempts=12):
     wait_for_grid_stable(driver, stable_for=0.6, timeout=8)
 
 
+def active_grid_scroll_state(driver):
+    """Return scroll position for the active grid's best vertical scroll box."""
+    try:
+        box = get_grid_scroll_box(driver, "y")
+        return driver.execute_script(
+            """
+            const el = arguments[0];
+            if (!el) return {top: 0, maxTop: 0, atBottom: true};
+            const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+            return {
+                top: el.scrollTop,
+                maxTop,
+                atBottom: maxTop <= 5 || el.scrollTop >= maxTop - 3
+            };
+            """,
+            box,
+        )
+    except Exception:
+        return {"top": 0, "maxTop": 0, "atBottom": False}
+
+
 def scroll_fields_grid_down(driver):
     """
     Scroll down inside the fields grid and verify whether the rendered row
@@ -1014,24 +1081,109 @@ def scroll_fields_grid_down(driver):
     # First try native wheel. This is the most important part.
     native_wheel_grid(driver, 650, pause=0.45)
 
-    changed = wait_for_visible_indexes_change(driver, before_indexes, timeout=5)
+    changed = wait_for_visible_indexes_change(
+        driver, before_indexes, timeout=GRID_SCROLL_CHANGE_TIMEOUT
+    )
 
-    if not changed:
+    scroll_state = active_grid_scroll_state(driver)
+
+    if not changed and not scroll_state.get("atBottom", False):
         # Fallback: PageDown sometimes triggers NetSuite grids when wheel does not.
         try:
             ActionChains(driver).send_keys(Keys.PAGE_DOWN).perform()
-            time.sleep(0.45)
-            changed = wait_for_visible_indexes_change(driver, before_indexes, timeout=4)
+            time.sleep(0.35)
+            changed = wait_for_visible_indexes_change(
+                driver,
+                before_indexes,
+                timeout=GRID_SCROLL_FALLBACK_TIMEOUT,
+            )
         except Exception:
             pass
 
     after_indexes = visible_grid_row_indexes(driver)
+    scroll_state = active_grid_scroll_state(driver)
 
     return {
         "changed": changed or after_indexes != before_indexes,
         "before_indexes": before_indexes,
         "after_indexes": after_indexes,
+        "at_bottom": bool(scroll_state.get("atBottom", False)),
+        "scroll_top": scroll_state.get("top", 0),
+        "max_scroll_top": scroll_state.get("maxTop", 0),
     }
+
+
+def advance_grid_with_stall_retries(driver, grid_label, record_name):
+    """
+    Attempts to advance the active virtual grid several times.
+
+    NetSuite may consume a wheel event without recycling the visible rows while
+    the grid is still hydrating. The previous implementation stopped scraping
+    after the first unchanged row range, which could mark partial data as a
+    successful scrape. This helper only reports the end after repeated stalls.
+    """
+    last_result = {
+        "changed": False,
+        "before_indexes": visible_grid_row_indexes(driver),
+        "after_indexes": visible_grid_row_indexes(driver),
+        "at_bottom": False,
+        "scroll_top": 0,
+        "max_scroll_top": 0,
+    }
+
+    for stall_attempt in range(1, GRID_SCROLL_STALL_MAX_ATTEMPTS + 1):
+        last_result = scroll_fields_grid_down(driver)
+        if last_result["changed"]:
+            return last_result
+
+        logger.info(
+            f"⏳ {grid_label} {record_name}: scroll did not advance "
+            f"({stall_attempt}/{GRID_SCROLL_STALL_MAX_ATTEMPTS}); "
+            f"at_bottom={last_result.get('at_bottom', False)}."
+        )
+
+        # Two unchanged attempts while the actual scroll box is at the bottom
+        # are enough to confirm the end. Away from the bottom, use all retries.
+        if last_result.get("at_bottom", False) and stall_attempt >= 2:
+            return last_result
+
+        # Let delayed row virtualization finish, then refocus before the next
+        # native wheel/PageDown attempt.
+        wait_for_grid_stable(driver, stable_for=0.35, timeout=2)
+        time.sleep(GRID_SCROLL_STALL_RETRY_PAUSE)
+
+    return last_result
+
+
+def field_item_key(item):
+    """Stable de-duplication key that does not depend on shifting row indexes."""
+    row_id = item.get("_row_id", "")
+    if row_id:
+        return f"row:{row_id}"
+
+    return "|".join([
+        item.get("Record ID", ""),
+        item.get("Field Path", "") or item.get("Field ID", ""),
+        item.get("Nested Record ID", ""),
+        item.get("Parent Field ID", ""),
+    ])
+
+
+def join_item_key(item):
+    """Stable Joins de-duplication key that survives virtual row recycling."""
+    row_id = item.get("_row_id", "")
+    if row_id:
+        return f"row:{row_id}"
+
+    return "|".join([
+        item.get("Record ID", ""),
+        item.get("Category ID", ""),
+        item.get("Join Type", ""),
+        item.get("Target Record ID", ""),
+        item.get("Source Field ID", ""),
+        item.get("Condition", ""),
+        item.get("Join Path", ""),
+    ])
 
 
 def wait_for_grid_rows_to_change(driver, old_signature, timeout=6):
@@ -1147,6 +1299,21 @@ def click_query_api_child(driver, child_item, record_name, record_id, timeout=No
     )
     return None
 
+
+
+def click_query_api_child_for_joins_only(driver, child_item):
+    """
+    Selects the SuiteScript and REST Query API child without waiting for Fields.
+
+    This is used during the zero-join resume pass. Waiting for Fields here is
+    unnecessary and can block progress on records whose Fields grid is empty or
+    slow while we only want to verify Joins.
+    """
+    content = child_item.find_element(By.CSS_SELECTOR, '[data-tree-section="content"]')
+    safe_click(driver, content)
+    time.sleep(0.35)
+    set_active_grid(JOINS_GRID)
+    return True
 
 # def get_grid_viewport(driver):
 #     try:
@@ -1489,16 +1656,17 @@ def scrape_fields_grid(driver, record_name, record_id, max_scrolls=180):
 
         for item in rows:
             field_path = item.get("Field Path", "") or item.get("Field ID", "")
-            row_index = item.get("_row_index", "")
-
             if not field_path:
                 continue
 
-            key = f"{row_index}:{field_path}" if row_index else field_path
-            collected[key] = item
+            collected[field_item_key(item)] = item
 
         collected_after_scrape = len(collected)
-        scroll_result = scroll_fields_grid_down(driver)
+        scroll_result = advance_grid_with_stall_retries(
+            driver,
+            "Fields",
+            record_name,
+        )
 
         logger.info(
             f"🧭 Fields {record_name} | round={scroll_round} | "
@@ -1519,10 +1687,8 @@ def scrape_fields_grid(driver, record_name, record_id, max_scrolls=180):
                 nested_lookup=nested_lookup,
             ):
                 field_path = item.get("Field Path", "") or item.get("Field ID", "")
-                row_index = item.get("_row_index", "")
                 if field_path:
-                    key = f"{row_index}:{field_path}" if row_index else field_path
-                    collected[key] = item
+                    collected[field_item_key(item)] = item
 
             logger.info(
                 f"🛑 Stopping Fields scrape for {record_name}: "
@@ -1531,6 +1697,11 @@ def scrape_fields_grid(driver, record_name, record_id, max_scrolls=180):
             break
 
         wait_for_grid_stable(driver, stable_for=0.4, timeout=6)
+    else:
+        raise IncompleteGridScrapeError(
+            f"Fields grid for {record_name} was still advancing after "
+            f"{max_scrolls} scroll rounds; refusing to save a partial scrape."
+        )
 
     cleaned = []
 
@@ -1982,20 +2153,14 @@ def scrape_joins_grid(driver, record_name, record_id, max_scrolls=220):
             category_state=category_state,
             parent_lookup=parent_lookup,
         ):
-            key_parts = [
-                item.get("_row_index", ""),
-                item.get("Category ID", ""),
-                item.get("Join Type", ""),
-                item.get("Target Record ID", ""),
-                item.get("Source Field ID", ""),
-                item.get("Condition", ""),
-                item.get("Join Path", ""),
-            ]
-            key = "|".join(key_parts)
-            collected[key] = item
+            collected[join_item_key(item)] = item
 
         collected_after_scrape = len(collected)
-        scroll_result = scroll_fields_grid_down(driver)
+        scroll_result = advance_grid_with_stall_retries(
+            driver,
+            "Joins",
+            record_name,
+        )
 
         logger.info(
             f"🧭 Joins {record_name} | round={scroll_round} | "
@@ -2013,17 +2178,7 @@ def scrape_joins_grid(driver, record_name, record_id, max_scrolls=220):
                 category_state=category_state,
                 parent_lookup=parent_lookup,
             ):
-                key_parts = [
-                    item.get("_row_index", ""),
-                    item.get("Category ID", ""),
-                    item.get("Join Type", ""),
-                    item.get("Target Record ID", ""),
-                    item.get("Source Field ID", ""),
-                    item.get("Condition", ""),
-                    item.get("Join Path", ""),
-                ]
-                key = "|".join(key_parts)
-                collected[key] = item
+                collected[join_item_key(item)] = item
 
             logger.info(
                 f"🛑 Stopping Joins scrape for {record_name}: "
@@ -2032,6 +2187,11 @@ def scrape_joins_grid(driver, record_name, record_id, max_scrolls=220):
             break
 
         wait_for_grid_stable(driver, stable_for=0.4, timeout=6)
+    else:
+        raise IncompleteGridScrapeError(
+            f"Joins grid for {record_name} was still advancing after "
+            f"{max_scrolls} scroll rounds; refusing to save a partial scrape."
+        )
 
     cleaned = []
 
@@ -2167,37 +2327,121 @@ def should_recheck_zero_joins_status(row):
     if status not in ZERO_JOINS_RECHECK_SOURCE_STATUSES:
         return False
 
-    return safe_int(row.get("Join Count"), default=0) == 0
+    if safe_int(row.get("Join Count"), default=0) != 0:
+        return False
+
+    if RECHECK_ZERO_JOINS_REQUIRE_EXISTING_FIELDS:
+        return safe_int(row.get("Field Count"), default=0) > 0
+
+    return True
 
 
-def count_existing_record_rows(rows, record_id):
-    if not record_id:
+def record_identity_key(record_name, record_id):
+    """Stable record key; falls back to the display name when ID is blank."""
+    record_id = clean_text(record_id)
+    if record_id:
+        return f"id:{record_id}"
+
+    record_name = clean_text(record_name)
+    return f"name:{record_name}" if record_name else ""
+
+
+def count_existing_record_rows(rows, record_id, record_name=""):
+    wanted = record_identity_key(record_name, record_id)
+    if not wanted:
         return 0
 
     return sum(
-        1 for row in rows
-        if (row.get("Record ID") or "") == record_id
+        1
+        for row in rows
+        if record_identity_key(row.get("Record Name"), row.get("Record ID")) == wanted
     )
+
+
+def latest_status_rows_by_index(status_rows):
+    """Return the last status row written for each 1-based Record Index."""
+    latest = {}
+    for row in status_rows:
+        record_index = safe_int(row.get("Record Index"), default=0)
+        if record_index > 0:
+            latest[record_index] = row
+    return latest
+
+
+def choose_resume_mode(status_row, existing_field_count, existing_join_count):
+    """
+    Decide how a previously visited record should be handled on resume.
+
+    Returns one of:
+    - ``done``: keep existing output and skip the record
+    - ``full``: re-scrape Fields and Joins, then atomically replace both
+    - ``joins``: preserve Fields and verify/re-scrape Joins only
+
+    A positive status count that disagrees with the partial CSV is always a
+    full repair. A completed legacy status is also fully repaired once when
+    REPAIR_COMPLETED_CATALOG_RECORDS_ON_RESUME is enabled, because legacy
+    ``success`` rows cannot prove the old virtual-grid loop reached the bottom.
+    """
+    status = (status_row.get("Status") or "").strip()
+    expected_fields = safe_int(status_row.get("Field Count"), default=0)
+    expected_joins = safe_int(status_row.get("Join Count"), default=0)
+
+    if status == "skipped_missing_name":
+        return "done"
+
+    output_count_mismatch = (
+        existing_field_count != expected_fields
+        or existing_join_count != expected_joins
+    )
+
+    # Preserve verified zero-field/zero-join records when their output is also
+    # empty. If stale rows exist, repair once so status and CSV data agree.
+    if status == "verified_no_catalog_tables":
+        return "full" if output_count_mismatch else "done"
+
+    # Even a final repaired status is retried if its checkpoint rows were lost
+    # or duplicated after the status was written.
+    if output_count_mismatch:
+        return "full"
+
+    if status in REPAIR_FINAL_STATUSES:
+        return "done"
+
+    if (
+        REPAIR_COMPLETED_CATALOG_RECORDS_ON_RESUME
+        and status in REPAIR_SOURCE_STATUSES
+    ):
+        # Include zero-field-with-joins and legacy verified_zero_joins records;
+        # only verified_no_catalog_tables is exempt from repair.
+        return "full"
+
+    if should_recheck_zero_joins_status(status_row):
+        return "joins"
+
+    if status in DONE_STATUSES:
+        return "done"
+
+    # Failed, interrupted, unseen, and old unverified statuses are retried fully.
+    return "full"
 
 
 def load_existing_progress():
     """
-    Loads prior V2 partial field/join rows and status rows so a resumed run does
-    not start from scratch.
+    Load prior partial outputs/status and build a status-driven repair plan.
 
-    New behavior:
-    - successful records with Join Count > 0 are skipped as before
-    - successful records with Join Count == 0 are re-opened for Joins-only recheck
-    - records marked verified_zero_joins are skipped on later resumes
+    The repair plan is keyed by zero-based tree index and contains ``full`` or
+    ``joins``. Legacy completed records are repaired once and then receive a
+    ``repair_*`` final status so future runs skip them. Records verified to have
+    no catalog tables stay final and are never forced into the repair pass.
     """
     if not RESUME_FROM_CHECKPOINT:
-        return [], [], [], set(), set()
+        return [], [], [], set(), {}
 
     status_rows = read_csv_dicts(STATUS_FILE)
 
     if not status_rows:
         logger.info("ℹ️ No previous V2 status checkpoint found. Starting from record 1.")
-        return [], [], [], set(), set()
+        return [], [], [], set(), {}
 
     if not os.path.exists(PARTIAL_FIELDS_FILE):
         raise RuntimeError(
@@ -2213,73 +2457,96 @@ def load_existing_progress():
 
     field_rows = read_csv_dicts(PARTIAL_FIELDS_FILE)
     join_rows = read_csv_dicts(PARTIAL_JOINS_FILE)
+    latest_status_by_index = latest_status_rows_by_index(status_rows)
 
-    latest_status_by_index = {}
-    for row in status_rows:
-        record_index = safe_int(row.get("Record Index"), default=0)
-        if record_index <= 0:
-            continue
+    field_counts = {}
+    for row in field_rows:
+        key = record_identity_key(row.get("Record Name"), row.get("Record ID"))
+        if key:
+            field_counts[key] = field_counts.get(key, 0) + 1
 
-        latest_status_by_index[record_index] = row
+    join_counts = {}
+    for row in join_rows:
+        key = record_identity_key(row.get("Record Name"), row.get("Record ID"))
+        if key:
+            join_counts[key] = join_counts.get(key, 0) + 1
 
     done_indexes = set()
-    zero_join_recheck_indexes = set()
+    repair_modes = {}
 
     for record_index, row in latest_status_by_index.items():
-        zero_based_index = record_index - 1
-        status = (row.get("Status") or "").strip()
+        if REPAIR_ONLY_RECORD_INDEXES is not None and record_index not in REPAIR_ONLY_RECORD_INDEXES:
+            # Explicit repair scoping only limits legacy completed repairs. It
+            # does not hide failed records or corrupt output-count mismatches.
+            status = (row.get("Status") or "").strip()
+            key = record_identity_key(row.get("Record Name"), row.get("Record ID"))
+            existing_fields = field_counts.get(key, 0)
+            existing_joins = join_counts.get(key, 0)
+            expected_fields = safe_int(row.get("Field Count"), default=0)
+            expected_joins = safe_int(row.get("Join Count"), default=0)
 
-        if should_recheck_zero_joins_status(row):
-            zero_join_recheck_indexes.add(zero_based_index)
-            continue
+            if (
+                status in DONE_STATUSES
+                and existing_fields == expected_fields
+                and existing_joins == expected_joins
+            ):
+                done_indexes.add(record_index - 1)
+                continue
 
-        if status in DONE_STATUSES:
-            done_indexes.add(zero_based_index)
-
-    if ZERO_JOINS_RECHECK_LIMIT is not None:
-        zero_join_recheck_indexes = set(
-            sorted(zero_join_recheck_indexes)[:ZERO_JOINS_RECHECK_LIMIT]
+        key = record_identity_key(row.get("Record Name"), row.get("Record ID"))
+        mode = choose_resume_mode(
+            row,
+            field_counts.get(key, 0),
+            join_counts.get(key, 0),
         )
+
+        zero_based_index = record_index - 1
+        if mode == "done":
+            done_indexes.add(zero_based_index)
+        else:
+            repair_modes[zero_based_index] = mode
+
+    if REPAIR_RECORD_LIMIT is not None:
+        keep = set(sorted(repair_modes)[:REPAIR_RECORD_LIMIT])
+        for index in list(repair_modes):
+            if index not in keep:
+                done_indexes.add(index)
+                del repair_modes[index]
+
+    mode_counts = {}
+    for mode in repair_modes.values():
+        mode_counts[mode] = mode_counts.get(mode, 0) + 1
 
     logger.info(
-        f"🔁 Resume mode active: loaded {len(field_rows)} previous field rows, "
-        f"{len(join_rows)} previous join rows, {len(status_rows)} status rows, "
-        f"{len(done_indexes)} completed records, and "
-        f"{len(zero_join_recheck_indexes)} zero-join records queued for Joins recheck."
+        f"🔁 Resume mode active: loaded {len(field_rows)} field rows, "
+        f"{len(join_rows)} join rows, and {len(status_rows)} status rows. "
+        f"Plan: {len(done_indexes)} done, "
+        f"{mode_counts.get('full', 0)} full Fields+Joins repairs, "
+        f"{mode_counts.get('joins', 0)} Joins-only repairs."
     )
 
-    if zero_join_recheck_indexes:
+    if repair_modes:
+        preview = [
+            f"{index + 1}:{repair_modes[index]}"
+            for index in sorted(repair_modes)[:25]
+        ]
         logger.info(
-            "🔁 Zero-join records queued for Joins recheck: "
-            + ", ".join(str(i + 1) for i in sorted(zero_join_recheck_indexes)[:20])
-            + ("..." if len(zero_join_recheck_indexes) > 20 else "")
+            "🔧 Status-driven repair queue (RecordIndex:mode): "
+            + ", ".join(preview)
+            + ("..." if len(repair_modes) > 25 else "")
         )
 
-    failed_or_unfinished = [
-        record_index
-        for record_index, row in latest_status_by_index.items()
-        if (
-            (row.get("Status") or "").strip() not in DONE_STATUSES
-            and (record_index - 1) not in zero_join_recheck_indexes
-        )
-    ]
+    return field_rows, join_rows, status_rows, done_indexes, repair_modes
 
-    if failed_or_unfinished:
-        logger.info(
-            "🔁 Failed/unfinished/unverified records will be retried: "
-            + ", ".join(str(i) for i in sorted(failed_or_unfinished)[:20])
-            + ("..." if len(failed_or_unfinished) > 20 else "")
-        )
-
-    return field_rows, join_rows, status_rows, done_indexes, zero_join_recheck_indexes
-
-def remove_existing_record_rows(rows, record_id):
-    if not record_id:
+def remove_existing_record_rows(rows, record_id, record_name=""):
+    wanted = record_identity_key(record_name, record_id)
+    if not wanted:
         return
 
     rows[:] = [
-        row for row in rows
-        if (row.get("Record ID") or "") != record_id
+        row
+        for row in rows
+        if record_identity_key(row.get("Record Name"), row.get("Record ID")) != wanted
     ]
 
 
@@ -2294,7 +2561,7 @@ def scrape_record_catalogs(driver):
     limit = TEST_LIMIT if TEST_LIMIT is not None else total_records
     limit = min(limit, total_records)
 
-    field_results, join_results, status_rows, done_indexes, zero_join_recheck_indexes = load_existing_progress()
+    field_results, join_results, status_rows, done_indexes, repair_modes = load_existing_progress()
     processed_count = 0
     stop_scrape = False
     skipped_done = 0
@@ -2307,14 +2574,20 @@ def scrape_record_catalogs(driver):
                     logger.info(f"⏭️ Skipped {skipped_done} already-completed records from V2 checkpoint.")
                 continue
 
-            recheck_joins_only = index in zero_join_recheck_indexes
+            repair_mode = repair_modes.get(index, "full")
+            recheck_joins_only = repair_mode == "joins"
+            full_repair = index in repair_modes and repair_mode == "full"
 
             logger.info(f"\n➡️ Processing record index {index + 1}/{limit}")
 
             if recheck_joins_only:
                 logger.info(
-                    f"🔁 Record index {index + 1} previously had Join Count = 0. "
-                    "Rechecking Joins only and preserving existing field rows."
+                    f"🔁 Record index {index + 1}: Joins-only repair; "
+                    "preserving existing field rows."
+                )
+            elif full_repair:
+                logger.info(
+                    f"🔧 Record index {index + 1}: full Fields + Joins repair."
                 )
 
             parent_id = None
@@ -2354,14 +2627,19 @@ def scrape_record_catalogs(driver):
                     )
 
                     parent_id, child = expand_record(driver, record_item)
-                    fields_grid = click_query_api_child(driver, child, record_name, record_id)
+
+                    if recheck_joins_only:
+                        click_query_api_child_for_joins_only(driver, child)
+                        fields_grid = None
+                    else:
+                        fields_grid = click_query_api_child(driver, child, record_name, record_id)
 
                     field_rows = []
                     join_rows = []
                     last_scrape_error = None
 
                     if recheck_joins_only:
-                        existing_field_count = count_existing_record_rows(field_results, record_id)
+                        existing_field_count = count_existing_record_rows(field_results, record_id, record_name)
 
                         for scrape_attempt in range(1, GRID_SCRAPE_MAX_ATTEMPTS + 1):
                             try:
@@ -2372,10 +2650,14 @@ def scrape_record_catalogs(driver):
 
                                 join_rows = scrape_joins_grid(driver, record_name, record_id)
 
-                                remove_existing_record_rows(join_results, record_id)
+                                remove_existing_record_rows(join_results, record_id, record_name)
                                 join_results.extend(join_rows)
 
-                                status = "success" if join_rows else "verified_zero_joins"
+                                status = (
+                                    "repair_success"
+                                    if join_rows
+                                    else "repair_verified_zero_joins"
+                                )
 
                                 if join_rows:
                                     logger.info(
@@ -2433,15 +2715,23 @@ def scrape_record_catalogs(driver):
                         # Usually means there is no query API detail grid. We still
                         # try Joins once in case the Fields tab was slow/missing but
                         # the Joins tab exists.
-                        try:
-                            join_rows = scrape_joins_grid(driver, record_name, record_id)
-                        except Exception:
-                            join_rows = []
+                        join_rows = scrape_joins_grid(driver, record_name, record_id)
 
                         if not join_rows:
                             logger.info(
                                 f"✅ Scraped 0 fields and 0 joins for {record_name} "
                                 "(verified no catalog tables)."
+                            )
+
+                            remove_existing_record_rows(
+                                field_results,
+                                record_id,
+                                record_name,
+                            )
+                            remove_existing_record_rows(
+                                join_results,
+                                record_id,
+                                record_name,
                             )
 
                             add_status(
@@ -2474,18 +2764,30 @@ def scrape_record_catalogs(driver):
                                 f"{len(join_rows)} join rows for {record_name}"
                             )
 
-                            remove_existing_record_rows(field_results, record_id)
-                            remove_existing_record_rows(join_results, record_id)
+                            remove_existing_record_rows(field_results, record_id, record_name)
+                            remove_existing_record_rows(join_results, record_id, record_name)
 
                             field_results.extend(field_rows)
                             join_results.extend(join_rows)
+
+                            if full_repair:
+                                if field_rows and join_rows:
+                                    completed_status = "repair_success"
+                                elif field_rows and not join_rows:
+                                    completed_status = "repair_verified_zero_joins"
+                                elif not field_rows and join_rows:
+                                    completed_status = "repair_success_zero_fields"
+                                else:
+                                    completed_status = "verified_no_catalog_tables"
+                            else:
+                                completed_status = "success"
 
                             add_status(
                                 status_rows,
                                 index,
                                 record_name,
                                 record_id,
-                                "success",
+                                completed_status,
                                 field_count=len(field_rows),
                                 join_count=len(join_rows),
                                 attempts=open_attempt,
