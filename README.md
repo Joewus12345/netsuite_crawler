@@ -70,6 +70,7 @@ ADMIN_ITEM_URL = "https://4891605.app.netsuite.com/app/common/custom/custrecord.
 # ✅ Configure WebDriver (Allow headless mode)
 HEADLESS_MODE = False  # Change to True to run without opening a browser
 
+# The setup below allows the browser session opened to persist and store cookies within the opened session so that the user does not need to go through the 2FA again until 30 days is up. NB: Subject to the setup run by the user/NetSuite
 import os
 
 PERSIST_BROWSER_PROFILE = True
