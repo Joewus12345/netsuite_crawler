@@ -7,3 +7,5 @@ record_catalogs_fields.partial.csv.tmp
 selenium_profiles/
 *.cookie
 *.cookies.json
+file_cabinet_state.sqlite3
+notes.txt
