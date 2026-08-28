@@ -34,6 +34,7 @@ from urllib3.util.retry import Retry
 
 
 LOG = logging.getLogger("file_cabinet_downloader")
+SCRIPT_VERSION = "2026.08.01-project-hierarchy-v4.1"
 ACCOUNT_BASE_URL = "https://4891605.app.netsuite.com"
 FILE_CABINET_PATH = "/app/common/media/mediaitemfolders.nl?sc=-63"
 LOGIN_URL_MARKERS = (
@@ -63,6 +64,10 @@ class FolderRecord:
     last_modified: str
     download_url: str
     page_index: int
+    parent_internal_id: str = ""
+    root_internal_id: str = ""
+    depth: int = 0
+    relative_path: str = ""
 
 
 def utc_now() -> str:
@@ -144,7 +149,9 @@ def parse_folder_rows(html: str, page_index: int, base_url: str) -> list[FolderR
                 page_index=page_index,
             )
         )
-    return records
+    # NetSuite can briefly expose the same row twice while replacing the table
+    # DOM. Preserve the first-seen order but inventory each Internal ID once.
+    return list({record.internal_id: record for record in records}.values())
 
 
 class DownloadDatabase:
@@ -179,7 +186,33 @@ class DownloadDatabase:
                 row_count INTEGER NOT NULL,
                 scanned_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS folder_scan_pages (
+                folder_internal_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL,
+                row_count INTEGER NOT NULL,
+                scanned_at TEXT NOT NULL,
+                PRIMARY KEY (folder_internal_id, page_index)
+            );
             """
+        )
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(folders)")
+        }
+        hierarchy_columns = {
+            "parent_internal_id": "TEXT NOT NULL DEFAULT ''",
+            "root_internal_id": "TEXT NOT NULL DEFAULT ''",
+            "depth": "INTEGER NOT NULL DEFAULT 0",
+            "relative_path": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in hierarchy_columns.items():
+            if column not in existing_columns:
+                self._connection.execute(
+                    f"ALTER TABLE folders ADD COLUMN {column} {definition}"
+                )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS folders_root_status_idx "
+            "ON folders(root_internal_id, status)"
         )
         # Migrate state created by version 1: every full 50-row page already
         # present in the database was successfully scanned.
@@ -188,6 +221,7 @@ class DownloadDatabase:
             INSERT OR IGNORE INTO scan_pages (page_index, row_count, scanned_at)
             SELECT page_index, COUNT(*), ?
             FROM folders
+            WHERE root_internal_id=''
             GROUP BY page_index
             HAVING COUNT(*) >= 50
             """,
@@ -202,7 +236,9 @@ class DownloadDatabase:
     def close(self) -> None:
         self._connection.close()
 
-    def upsert_inventory(self, records: Iterable[FolderRecord]) -> None:
+    def upsert_inventory(
+        self, records: Iterable[FolderRecord], scan_folder_id: str = ""
+    ) -> None:
         records = list(records)
         if not records:
             return
@@ -211,8 +247,9 @@ class DownloadDatabase:
                 """
                 INSERT INTO folders (
                     internal_id, name, size_text, size_bytes, last_modified,
-                    download_url, page_index, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    download_url, page_index, parent_internal_id,
+                    root_internal_id, depth, relative_path, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(internal_id) DO UPDATE SET
                     name=excluded.name,
                     size_text=excluded.size_text,
@@ -220,6 +257,10 @@ class DownloadDatabase:
                     last_modified=excluded.last_modified,
                     download_url=excluded.download_url,
                     page_index=excluded.page_index,
+                    parent_internal_id=excluded.parent_internal_id,
+                    root_internal_id=excluded.root_internal_id,
+                    depth=excluded.depth,
+                    relative_path=excluded.relative_path,
                     updated_at=excluded.updated_at
                 """,
                 [
@@ -231,12 +272,29 @@ class DownloadDatabase:
                         item.last_modified,
                         item.download_url,
                         item.page_index,
+                        item.parent_internal_id,
+                        item.root_internal_id,
+                        item.depth,
+                        item.relative_path,
                         utc_now(),
                     )
                     for item in records
                 ],
             )
-            self._connection.execute(
+            if scan_folder_id:
+                self._connection.execute(
+                    """
+                    INSERT INTO folder_scan_pages (
+                        folder_internal_id, page_index, row_count, scanned_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(folder_internal_id, page_index) DO UPDATE SET
+                        row_count=excluded.row_count,
+                        scanned_at=excluded.scanned_at
+                    """,
+                    (scan_folder_id, records[0].page_index, len(records), utc_now()),
+                )
+            else:
+                self._connection.execute(
                 """
                 INSERT INTO scan_pages (page_index, row_count, scanned_at)
                 VALUES (?, ?, ?)
@@ -245,40 +303,102 @@ class DownloadDatabase:
                     scanned_at=excluded.scanned_at
                 """,
                 (records[0].page_index, len(records), utc_now()),
+                )
+            self._connection.commit()
+
+    def scanned_pages(self, folder_internal_id: str = "") -> set[int]:
+        with self._lock:
+            if folder_internal_id:
+                rows = self._connection.execute(
+                    "SELECT page_index FROM folder_scan_pages "
+                    "WHERE folder_internal_id=?",
+                    (folder_internal_id,),
+                )
+            else:
+                rows = self._connection.execute("SELECT page_index FROM scan_pages")
+            return {
+                int(row["page_index"])
+                for row in rows
+            }
+
+    def clear_scan_pages(self, folder_internal_id: str = "") -> None:
+        with self._lock:
+            if folder_internal_id:
+                self._connection.execute(
+                    "DELETE FROM folder_scan_pages WHERE folder_internal_id=?",
+                    (folder_internal_id,),
+                )
+            else:
+                self._connection.execute("DELETE FROM scan_pages")
+            self._connection.commit()
+
+    def mark_folder_page_scanned(
+        self, folder_internal_id: str, page_index: int, row_count: int
+    ) -> None:
+        """Checkpoint a hierarchy page even when it contains files but no folders."""
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO folder_scan_pages (
+                    folder_internal_id, page_index, row_count, scanned_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(folder_internal_id, page_index) DO UPDATE SET
+                    row_count=excluded.row_count,
+                    scanned_at=excluded.scanned_at
+                """,
+                (folder_internal_id, page_index, row_count, utc_now()),
             )
             self._connection.commit()
 
-    def scanned_pages(self) -> set[int]:
-        with self._lock:
-            return {
-                int(row["page_index"])
-                for row in self._connection.execute(
-                    "SELECT page_index FROM scan_pages"
-                )
-            }
-
-    def clear_scan_pages(self) -> None:
-        with self._lock:
-            self._connection.execute("DELETE FROM scan_pages")
-            self._connection.commit()
-
-    def pending(self, retry_failed: bool) -> list[sqlite3.Row]:
+    def pending(
+        self,
+        retry_failed: bool,
+        min_size_bytes: int = 0,
+        max_size_bytes: int = 0,
+        root_folder_id: str = "",
+    ) -> list[sqlite3.Row]:
         statuses = ("pending", "failed") if retry_failed else ("pending",)
         placeholders = ",".join("?" for _ in statuses)
+        size_conditions = ["size_bytes >= ?"]
+        parameters: list[object] = [*statuses, min_size_bytes]
+        if max_size_bytes > 0:
+            size_conditions.append("size_bytes <= ?")
+            parameters.append(max_size_bytes)
+        root_condition = ""
+        if root_folder_id:
+            root_condition = "AND root_internal_id = ?"
+            parameters.append(root_folder_id)
         with self._lock:
             return list(
                 self._connection.execute(
                     f"""
                     SELECT * FROM folders
                     WHERE status IN ({placeholders})
+                      AND {' AND '.join(size_conditions)}
+                      {root_condition}
                     ORDER BY
                         CASE WHEN size_bytes >= 805306368 THEN 1 ELSE 0 END,
                         page_index,
                         CAST(internal_id AS INTEGER)
                     """,
-                    statuses,
+                    parameters,
                 )
             )
+
+    def mark_split_ready(self, internal_id: str) -> None:
+        self._update(
+            internal_id,
+            "status='split_ready', error=NULL, updated_at=?",
+            (utc_now(),),
+        )
+
+    def hierarchy_count(self, root_folder_id: str) -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM folders WHERE root_internal_id=?",
+                (root_folder_id,),
+            ).fetchone()
+            return int(row["count"])
 
     def mark_started(self, internal_id: str) -> None:
         self._update(
@@ -314,11 +434,18 @@ class DownloadDatabase:
             )
             self._connection.commit()
 
-    def summary(self) -> dict[str, int]:
+    def summary(self, root_folder_id: str = "") -> dict[str, int]:
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT status, COUNT(*) AS count FROM folders GROUP BY status"
-            )
+            if root_folder_id:
+                rows = self._connection.execute(
+                    "SELECT status, COUNT(*) AS count FROM folders "
+                    "WHERE root_internal_id=? GROUP BY status",
+                    (root_folder_id,),
+                )
+            else:
+                rows = self._connection.execute(
+                    "SELECT status, COUNT(*) AS count FROM folders GROUP BY status"
+                )
             return {row["status"]: row["count"] for row in rows}
 
     def inventory_count(self) -> int:
@@ -328,15 +455,34 @@ class DownloadDatabase:
             ).fetchone()
             return int(row["count"])
 
-    def export_csv(self, path: Path) -> None:
+    def export_csv(
+        self,
+        path: Path,
+        root_folder_id: str = "",
+        statuses: tuple[str, ...] = (),
+    ) -> None:
         import csv
 
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if root_folder_id:
+            conditions.append("root_internal_id=?")
+            parameters.append(root_folder_id)
+        if statuses:
+            conditions.append(
+                "status IN (" + ",".join("?" for _ in statuses) + ")"
+            )
+            parameters.extend(statuses)
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         with self._lock:
             rows = list(
                 self._connection.execute(
-                    "SELECT * FROM folders ORDER BY page_index, CAST(internal_id AS INTEGER)"
+                    f"SELECT * FROM folders {where_clause} "
+                    "ORDER BY page_index, CAST(internal_id AS INTEGER)",
+                    parameters,
                 )
             )
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.writer(handle)
             writer.writerow(rows[0].keys() if rows else [])
@@ -422,6 +568,124 @@ def validate_zip(path: Path, verify_mode: str) -> None:
                 raise RuntimeError(f"ZIP CRC failed for member {bad_member!r}")
 
 
+def hash_existing_file(path: Path, chunk_bytes: int) -> hashlib._Hash:
+    digest = hashlib.sha256()
+    if path.exists():
+        with path.open("rb") as handle:
+            while chunk := handle.read(chunk_bytes):
+                digest.update(chunk)
+    return digest
+
+
+def download_transfer(
+    session: requests.Session,
+    download_url: str,
+    referer: str,
+    part_path: Path,
+    stop_event: threading.Event,
+    chunk_bytes: int,
+    connect_timeout: int,
+    read_timeout: int,
+    verify_mode: str,
+    internal_id: str,
+) -> tuple[int, str]:
+    existing_bytes = part_path.stat().st_size if part_path.exists() else 0
+    headers = {"Referer": referer}
+    if existing_bytes:
+        headers["Range"] = f"bytes={existing_bytes}-"
+        LOG.info(
+            "[%s] Found %.2f GiB partial file; requesting resume",
+            internal_id,
+            existing_bytes / 1024**3,
+        )
+
+    with session.get(
+        download_url,
+        headers=headers,
+        stream=True,
+        allow_redirects=True,
+        timeout=(connect_timeout, read_timeout),
+    ) as response:
+        final_url = response.url.lower()
+        content_type = response.headers.get("Content-Type", "").lower()
+        if any(marker in final_url for marker in LOGIN_URL_MARKERS):
+            raise AuthenticationExpired("NetSuite redirected the download to login")
+        if "text/html" in content_type:
+            raise AuthenticationExpired(
+                "NetSuite returned HTML instead of a folder ZIP; the session may have expired"
+            )
+
+        # A 416 can mean the local partial already contains the complete remote
+        # object. Accept it only if the existing file is independently valid.
+        if response.status_code == 416 and existing_bytes:
+            validate_zip(part_path, verify_mode)
+            return existing_bytes, hash_existing_file(
+                part_path, chunk_bytes
+            ).hexdigest()
+
+        response.raise_for_status()
+        resumed = response.status_code == 206 and existing_bytes > 0
+        if resumed:
+            content_range = response.headers.get("Content-Range", "")
+            match = re.match(r"bytes\s+(\d+)-\d+/(?:\d+|\*)", content_range)
+            if not match or int(match.group(1)) != existing_bytes:
+                raise RuntimeError(
+                    f"Unsafe Content-Range for resume: {content_range!r}"
+                )
+            mode = "ab"
+            actual_bytes = existing_bytes
+            digest = hash_existing_file(part_path, chunk_bytes)
+            LOG.info("[%s] NetSuite accepted HTTP Range resume", internal_id)
+        else:
+            # NetSuite may ignore Range and return 200. Starting over is safe;
+            # appending that response would corrupt the archive.
+            mode = "wb"
+            actual_bytes = 0
+            digest = hashlib.sha256()
+            if existing_bytes:
+                LOG.info(
+                    "[%s] NetSuite did not accept resume; restarting this folder",
+                    internal_id,
+                )
+
+        content_length = int(response.headers.get("Content-Length", "0") or 0)
+        expected_final_bytes = (
+            actual_bytes + content_length if content_length else 0
+        )
+        next_progress_log = time.monotonic() + 60
+        with part_path.open(mode) as handle:
+            for chunk in response.iter_content(chunk_size=chunk_bytes):
+                if stop_event.is_set():
+                    raise RuntimeError("Download run stopped")
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                digest.update(chunk)
+                actual_bytes += len(chunk)
+                if time.monotonic() >= next_progress_log:
+                    LOG.info(
+                        "[%s] Downloaded %.2f GiB so far",
+                        internal_id,
+                        actual_bytes / 1024**3,
+                    )
+                    next_progress_log = time.monotonic() + 60
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    if expected_final_bytes and actual_bytes != expected_final_bytes:
+        raise RuntimeError(
+            f"Content-Length mismatch: expected final size "
+            f"{expected_final_bytes}, got {actual_bytes}"
+        )
+    try:
+        validate_zip(part_path, verify_mode)
+    except Exception:
+        # A fully transferred but invalid response is not a resumable prefix.
+        part_path.unlink(missing_ok=True)
+        raise
+    return actual_bytes, digest.hexdigest()
+
+
 def download_one(
     row: sqlite3.Row,
     db: DownloadDatabase,
@@ -434,6 +698,10 @@ def download_one(
     verify_mode: str,
     stop_event: threading.Event,
     chunk_bytes: int,
+    connect_timeout: int,
+    read_timeout: int,
+    folder_retries: int,
+    retry_backoff: int,
 ) -> Path:
     if stop_event.is_set():
         raise RuntimeError("Download run stopped")
@@ -441,62 +709,61 @@ def download_one(
     internal_id = row["internal_id"]
     expected_bytes = int(row["size_bytes"])
     weight = limiter.acquire(expected_bytes)
-    final_path = output_dir / (
+    destination_dir = output_dir
+    if row["relative_path"]:
+        destination_dir = output_dir / Path(row["relative_path"])
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    final_path = destination_dir / (
         f"{internal_id}__{safe_filename(row['name'])}.zip"
     )
     part_path = final_path.with_suffix(final_path.suffix + PART_SUFFIX)
     session = create_requests_session(cookies, user_agent)
 
     try:
-        ensure_disk_space(output_dir, expected_bytes, reserve_bytes)
+        ensure_disk_space(destination_dir, expected_bytes, reserve_bytes)
         db.mark_started(internal_id)
-        part_path.unlink(missing_ok=True)
-
-        LOG.info(
-            "[%s] Starting %s (%s)",
-            internal_id,
-            row["name"],
-            row["size_text"],
-        )
-        with session.get(
-            row["download_url"],
-            headers={"Referer": referer},
-            stream=True,
-            allow_redirects=True,
-            timeout=(30, 180),
-        ) as response:
-            response.raise_for_status()
-            final_url = response.url.lower()
-            content_type = response.headers.get("Content-Type", "").lower()
-            if any(marker in final_url for marker in LOGIN_URL_MARKERS):
-                raise AuthenticationExpired("NetSuite redirected the download to login")
-            if "text/html" in content_type:
-                raise AuthenticationExpired(
-                    "NetSuite returned HTML instead of a folder ZIP; the session may have expired"
+        actual_bytes = 0
+        sha256 = ""
+        for attempt in range(1, folder_retries + 1):
+            try:
+                LOG.info(
+                    "[%s] Starting %s (%s), attempt %d/%d",
+                    internal_id,
+                    row["name"],
+                    row["size_text"],
+                    attempt,
+                    folder_retries,
                 )
+                actual_bytes, sha256 = download_transfer(
+                    session=session,
+                    download_url=row["download_url"],
+                    referer=referer,
+                    part_path=part_path,
+                    stop_event=stop_event,
+                    chunk_bytes=chunk_bytes,
+                    connect_timeout=connect_timeout,
+                    read_timeout=read_timeout,
+                    verify_mode=verify_mode,
+                    internal_id=internal_id,
+                )
+                break
+            except AuthenticationExpired:
+                raise
+            except Exception as exc:
+                if attempt >= folder_retries:
+                    raise
+                delay = retry_backoff * attempt
+                LOG.warning(
+                    "[%s] Attempt %d failed: %s. Retrying in %d seconds",
+                    internal_id,
+                    attempt,
+                    exc,
+                    delay,
+                )
+                stop_event.wait(delay)
 
-            content_length = int(response.headers.get("Content-Length", "0") or 0)
-            digest = hashlib.sha256()
-            actual_bytes = 0
-            with part_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=chunk_bytes):
-                    if stop_event.is_set():
-                        raise RuntimeError("Download run stopped")
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    actual_bytes += len(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-
-        if content_length and actual_bytes != content_length:
-            raise RuntimeError(
-                f"Content-Length mismatch: expected {content_length}, got {actual_bytes}"
-            )
-        validate_zip(part_path, verify_mode)
         os.replace(part_path, final_path)
-        db.mark_complete(internal_id, final_path, actual_bytes, digest.hexdigest())
+        db.mark_complete(internal_id, final_path, actual_bytes, sha256)
         LOG.info("[%s] Complete: %s", internal_id, final_path.name)
         return final_path
     except AuthenticationExpired:
@@ -672,6 +939,135 @@ def scan_inventory(
     return len(total_seen)
 
 
+def active_folder_id(driver: webdriver.Chrome) -> str:
+    """Return the folder currently shown in the right-hand File Cabinet pane."""
+    try:
+        return str(
+            driver.execute_script(
+                """
+                const field = document.querySelector(
+                    'input#folder, input[name="folder"]'
+                );
+                if (field && field.value) return String(field.value);
+                const heading = document.querySelector(
+                    '#medialisthdr_t a[href*="showFolderContents"]'
+                );
+                const match = heading && heading.getAttribute('href')
+                    .match(/[0-9]+/);
+                return match ? match[1] : '';
+                """
+            )
+            or ""
+        )
+    except WebDriverException:
+        return ""
+
+
+def open_folder_in_cabinet(
+    driver: webdriver.Chrome, folder_internal_id: str, timeout: int
+) -> None:
+    """Use NetSuite's own UI function; relative row hrefs are not real URLs."""
+    before = current_row_signature(driver)
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script(
+            "return typeof window.showFolderContents === 'function'"
+        )
+    )
+    driver.execute_script(
+        "window.showFolderContents(arguments[0]);", str(folder_internal_id)
+    )
+
+    def folder_loaded(d):
+        signature = current_row_signature(d)
+        return (
+            active_folder_id(d) == str(folder_internal_id)
+            and bool(signature)
+            and signature != before
+        )
+
+    WebDriverWait(
+        driver,
+        timeout,
+        poll_frequency=0.35,
+        ignored_exceptions=(
+            NoSuchElementException,
+            StaleElementReferenceException,
+            WebDriverException,
+        ),
+    ).until(folder_loaded)
+
+
+def expand_folder_inventory(
+    driver: webdriver.Chrome,
+    db: DownloadDatabase,
+    base_url: str,
+    folder_internal_id: str,
+    folder_name: str,
+    timeout: int,
+    resume: bool = True,
+) -> int:
+    """Inventory direct child folders so a large parent can be downloaded in pieces."""
+    open_folder_in_cabinet(driver, folder_internal_id, timeout)
+    total_pages = page_count(driver)
+    scanned_pages = (
+        db.scanned_pages(folder_internal_id) if resume else set()
+    )
+    total_seen: set[str] = set()
+    relative_path = f"{folder_internal_id}__{safe_filename(folder_name)}"
+
+    for page_index in range(total_pages):
+        if page_index in scanned_pages:
+            LOG.info(
+                "Skipping previously scanned %s page %d/%d",
+                folder_name,
+                page_index + 1,
+                total_pages,
+            )
+            continue
+        go_to_page(driver, page_index, timeout)
+        parsed = parse_folder_rows(driver.page_source, page_index, base_url)
+        if not parsed:
+            # The pagination total includes ordinary files as well as folders.
+            # A page with no /downloadfolder.nl links is therefore valid.
+            db.mark_folder_page_scanned(str(folder_internal_id), page_index, 0)
+            LOG.info(
+                "Scanned %s page %d/%d: 0 child folders (file-only page)",
+                folder_name,
+                page_index + 1,
+                total_pages,
+            )
+            continue
+        records = [
+            FolderRecord(
+                internal_id=item.internal_id,
+                name=item.name,
+                size_text=item.size_text,
+                size_bytes=item.size_bytes,
+                last_modified=item.last_modified,
+                download_url=item.download_url,
+                page_index=item.page_index,
+                parent_internal_id=str(folder_internal_id),
+                root_internal_id=str(folder_internal_id),
+                depth=1,
+                relative_path=relative_path,
+            )
+            for item in parsed
+        ]
+        db.upsert_inventory(records, scan_folder_id=str(folder_internal_id))
+        total_seen.update(record.internal_id for record in records)
+        LOG.info(
+            "Scanned %s page %d/%d: %d children (%d this run)",
+            folder_name,
+            page_index + 1,
+            total_pages,
+            len(records),
+            len(total_seen),
+        )
+
+    db.mark_split_ready(str(folder_internal_id))
+    return db.hierarchy_count(str(folder_internal_id))
+
+
 def create_driver(download_dir: Path, headless: bool, profile_dir: str | None):
     options = webdriver.ChromeOptions()
     if headless:
@@ -734,10 +1130,22 @@ def run_downloads(
     reserve_bytes: int,
     retry_failed: bool,
     max_downloads: int,
+    min_size_bytes: int,
+    max_size_bytes: int,
     verify_mode: str,
     chunk_bytes: int,
+    connect_timeout: int,
+    read_timeout: int,
+    folder_retries: int,
+    retry_backoff: int,
+    root_folder_id: str = "",
 ) -> None:
-    rows = db.pending(retry_failed)
+    rows = db.pending(
+        retry_failed,
+        min_size_bytes=min_size_bytes,
+        max_size_bytes=max_size_bytes,
+        root_folder_id=root_folder_id,
+    )
     if max_downloads > 0:
         rows = rows[:max_downloads]
     if not rows:
@@ -771,6 +1179,10 @@ def run_downloads(
                 verify_mode,
                 stop_event,
                 chunk_bytes,
+                connect_timeout,
+                read_timeout,
+                folder_retries,
+                retry_backoff,
             )
             for row in rows
         ]
@@ -794,7 +1206,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Resumable NetSuite File Cabinet folder downloader"
     )
     parser.add_argument(
-        "mode", choices=("scan", "download", "all", "status"), nargs="?", default="all"
+        "--version",
+        action="version",
+        version=f"%(prog)s {SCRIPT_VERSION}",
+    )
+    parser.add_argument(
+        "mode",
+        choices=("scan", "expand", "download", "all", "status"),
+        nargs="?",
+        default="all",
     )
     parser.add_argument("--base-url", default=ACCOUNT_BASE_URL)
     parser.add_argument(
@@ -805,11 +1225,56 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("file_cabinet_downloads"))
     parser.add_argument("--state-db", type=Path, default=Path("file_cabinet_state.sqlite3"))
     parser.add_argument("--manifest-csv", type=Path, default=Path("file_cabinet_manifest.csv"))
+    parser.add_argument(
+        "--failed-csv",
+        type=Path,
+        default=Path("failed_downloads.csv"),
+        help="Filtered failed-download report written after status/download runs",
+    )
+    parser.add_argument(
+        "--folder-id",
+        default="",
+        help="Parent folder Internal ID to inventory in expand mode (for Projects: 6225)",
+    )
+    parser.add_argument(
+        "--folder-name",
+        default="",
+        help="Readable parent name used for logs and the output subdirectory",
+    )
+    parser.add_argument(
+        "--root-folder-id",
+        default="",
+        help="Download only descendants inventoried under this parent ID",
+    )
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--in-flight-gib", type=float, default=1.5)
     parser.add_argument("--large-threshold-gib", type=float, default=0.75)
     parser.add_argument("--reserve-disk-gib", type=float, default=10.0)
     parser.add_argument("--chunk-mib", type=int, default=4)
+    parser.add_argument(
+        "--connect-timeout",
+        type=int,
+        default=60,
+        help="Seconds allowed to establish a download connection",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=int,
+        default=900,
+        help="Maximum seconds between received chunks",
+    )
+    parser.add_argument(
+        "--folder-retries",
+        type=int,
+        default=3,
+        help="Attempts per folder during one run",
+    )
+    parser.add_argument(
+        "--retry-backoff",
+        type=int,
+        default=30,
+        help="Base seconds between folder attempts",
+    )
     parser.add_argument("--verify", choices=("structure", "crc"), default="structure")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument(
@@ -817,6 +1282,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Stop after this many queued folders; 0 means no limit",
+    )
+    parser.add_argument(
+        "--min-size-gib",
+        type=float,
+        default=0,
+        help="Only process folders at or above this displayed size",
+    )
+    parser.add_argument(
+        "--max-size-gib",
+        type=float,
+        default=0,
+        help="Only process folders at or below this displayed size; 0 means unlimited",
     )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--profile-dir")
@@ -841,14 +1318,34 @@ def main() -> int:
         raise SystemExit("Byte-budget options must be greater than zero")
     if args.max_downloads < 0:
         raise SystemExit("--max-downloads cannot be negative")
+    if args.min_size_gib < 0 or args.max_size_gib < 0:
+        raise SystemExit("Size filters cannot be negative")
+    if (
+        args.max_size_gib > 0
+        and args.max_size_gib < args.min_size_gib
+    ):
+        raise SystemExit("--max-size-gib cannot be below --min-size-gib")
+    if args.connect_timeout < 1 or args.read_timeout < 1:
+        raise SystemExit("Connection and read timeouts must be positive")
+    if args.folder_retries < 1 or args.folder_retries > 10:
+        raise SystemExit("--folder-retries must be between 1 and 10")
+    if args.retry_backoff < 0:
+        raise SystemExit("--retry-backoff cannot be negative")
+    if args.mode == "expand" and not args.folder_id:
+        raise SystemExit("expand mode requires --folder-id")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.state_db.parent.mkdir(parents=True, exist_ok=True)
     db = DownloadDatabase(args.state_db)
 
     if args.mode == "status":
-        print(json.dumps(db.summary(), indent=2))
-        db.export_csv(args.manifest_csv)
+        print(json.dumps(db.summary(args.root_folder_id), indent=2))
+        db.export_csv(args.manifest_csv, root_folder_id=args.root_folder_id)
+        db.export_csv(
+            args.failed_csv,
+            root_folder_id=args.root_folder_id,
+            statuses=("failed",),
+        )
         db.close()
         return 0
 
@@ -874,6 +1371,30 @@ def main() -> int:
             )
             db.export_csv(args.manifest_csv)
 
+        if args.mode == "expand":
+            folder_name = args.folder_name or f"folder_{args.folder_id}"
+            if args.rescan_all:
+                db.clear_scan_pages(args.folder_id)
+            child_count = expand_folder_inventory(
+                driver=driver,
+                db=db,
+                base_url=args.base_url,
+                folder_internal_id=args.folder_id,
+                folder_name=folder_name,
+                timeout=args.page_timeout,
+                resume=not args.rescan_all,
+            )
+            LOG.info(
+                "Expansion complete: %d direct children under %s (%s)",
+                child_count,
+                folder_name,
+                args.folder_id,
+            )
+            db.export_csv(
+                args.manifest_csv,
+                root_folder_id=args.folder_id,
+            )
+
         if args.mode in {"download", "all"}:
             run_downloads(
                 db=db,
@@ -885,12 +1406,27 @@ def main() -> int:
                 reserve_bytes=gib(args.reserve_disk_gib),
                 retry_failed=args.retry_failed,
                 max_downloads=args.max_downloads,
+                min_size_bytes=gib(args.min_size_gib),
+                max_size_bytes=gib(args.max_size_gib),
                 verify_mode=args.verify,
                 chunk_bytes=args.chunk_mib * 1024**2,
+                connect_timeout=args.connect_timeout,
+                read_timeout=args.read_timeout,
+                folder_retries=args.folder_retries,
+                retry_backoff=args.retry_backoff,
+                root_folder_id=args.root_folder_id,
             )
-            db.export_csv(args.manifest_csv)
+            db.export_csv(
+                args.manifest_csv,
+                root_folder_id=args.root_folder_id,
+            )
+            db.export_csv(
+                args.failed_csv,
+                root_folder_id=args.root_folder_id,
+                statuses=("failed",),
+            )
 
-        LOG.info("Final status: %s", db.summary())
+        LOG.info("Final status: %s", db.summary(args.root_folder_id))
         return 0
     except TimeoutException as exc:
         LOG.error("Timed out waiting for the File Cabinet UI: %s", exc)

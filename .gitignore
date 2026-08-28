@@ -9,3 +9,6 @@ selenium_profiles/
 *.cookies.json
 file_cabinet_state.sqlite3
 notes.txt
+file_cabinet_state.before-projects.sqlite3
+projects_retry_test.log
+*.txt

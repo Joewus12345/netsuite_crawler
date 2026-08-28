@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # ── Phase 1: List Values Navigation & Scrape ─────────────────────────────
 ADMIN_ROLE_URL = (
     "https://4891605.app.netsuite.com/app/login/secure/changerole.nl?"
-    "id=4891605~9203~1114~N"
+    "id=4891605~10457~1073~N"
 )
 
 
@@ -37,30 +37,40 @@ def navigate_to_list_values_table(driver):
 
 
 def _extract_value_from_row(row):
-    """Return the text for a value cell within a list row.
+    """Return the value and Internal ID cells within a list row.
 
-    Tries attribute-based selectors first and falls back to the second column
+    Tries attribute-based selectors first and falls back to column positions
     when those are unavailable.
     """
 
-    # Prefer explicit column identification when available
-    selectors = [
-        'td[data-ns-tooltip="Value"]',
-        'td[data-label="Value"]',
-    ]
+    def cell_text(selectors, fallback):
+        for selector in selectors:
+            cells = row.find_elements(By.CSS_SELECTOR, selector)
+            if cells:
+                return cells[0].text.strip()
 
-    for selector in selectors:
-        cells = row.find_elements(By.CSS_SELECTOR, selector)
-        if cells:
-            return cells[0].text.strip()
+        try:
+            return row.find_element(By.CSS_SELECTOR, fallback).text.strip()
+        except NoSuchElementException:
+            return ""
 
-    # Fallback: first non-grippy cell
-    try:
-        return row.find_element(
-            By.CSS_SELECTOR, "td:nth-child(2)"
-        ).text.strip()
-    except NoSuchElementException:
-        return ""
+    value = cell_text(
+        [
+            'td[data-field-name="value"]',
+            'td[data-ns-tooltip="Value"]',
+            'td[data-label="Value"]',
+        ],
+        "td:nth-child(1)",
+    )
+    internal_id = cell_text(
+        [
+            'td[data-field-name="valueid"]',
+            'td[data-ns-tooltip="Internal ID"]',
+            'td[data-label="Internal ID"]',
+        ],
+        "td:nth-child(2)",
+    )
+    return value, internal_id
 
 
 def scrape_list_values(driver):
@@ -95,9 +105,9 @@ def scrape_list_values(driver):
         )
         values = []
         for row in rows:
-            value = _extract_value_from_row(row)
+            value, internal_id = _extract_value_from_row(row)
             if value:
-                values.append(value)
+                values.append((value, internal_id))
         results[name] = values
 
     logger.info("✅ Finished scraping list values.")
@@ -109,10 +119,10 @@ def save_list_values(data, filename="list_values.csv"):
 
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Custom List", "Values"])
+        writer.writerow(["Custom List", "Values", "Internal ID"])
         for list_name, values in data.items():
-            for value in values:
-                writer.writerow([list_name, value])
+            for value, internal_id in values:
+                writer.writerow([list_name, value, internal_id])
 
     logger.info(f"💾 Saved list values to {filename}")
 
